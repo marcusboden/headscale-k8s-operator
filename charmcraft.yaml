@@ -1,0 +1,67 @@
+# This file configures Charmcraft.
+# See https://canonical-charmcraft.readthedocs-hosted.com/en/stable/reference/files/charmcraft-yaml-file/
+type: charm
+name: headscale-k8s
+title: Headscale
+summary: Headscale is an open source, self-hosted implementation of the Tailscale control server.
+description: |
+  This charm deploys headscale on top of kubernetes.
+
+links:
+  contact: See github
+  issues:
+  - https://github.com/marcusboden/headscale-k8s-operator/issues
+  source:
+  - https://github.com/marcusboden/headscale-k8s-operator
+  upstream:
+  - https://headscale.net/
+  - https://github.com/juanfont/headscale
+
+base: ubuntu@24.04
+platforms:
+  amd64:
+
+assumes:
+  - k8s-api
+  - juju >= 3.1
+
+parts:
+    charm:
+        source: .
+        source-type: local
+
+config:
+  options:
+    log-level:
+      description: |
+        Configures the log level of headscale.
+      default: "info"
+      type: string
+    port:
+      description: |
+        The port the headscale server listens on. Do I even need this? I shouldn't, with traefik...
+      default: 8080
+      type: int
+    hostname:
+      description: |
+        Hostname of the headscale server
+      default: headscale
+      type: string
+
+containers:
+  headscale:
+    resource: headscale-image
+
+resources:
+  headscale-image:
+    type: oci-image
+    description: |
+      OCI image for the headscale container
+
+      see https://github.com/marcusboden/headscale-rock
+
+requires:
+    traefik-route:
+        interface: traefik_route
+        limit: 1
+        optional: true
