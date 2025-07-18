@@ -15,6 +15,18 @@ More information: https://charmhub.io/headscale-k8s
 
 This charm deploys headscale in kubernetes. It uses [this rock](http://github.com/marcusboden/headscale-rock) as a container.
 
+## TODO:
+- policy Files
+- headacale actions
+    - user create, delete
+    - auth key handling
+    - remove node
+    - extend node
+- backup
+- metrics
+    - alerts for node expiration
+
+
 ## Other resources
 
 <!-- If your charm is documented somewhere else other than Charmhub, provide a link separately. -->

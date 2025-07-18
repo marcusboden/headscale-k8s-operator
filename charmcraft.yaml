@@ -13,8 +13,6 @@ links:
   - https://github.com/marcusboden/headscale-k8s-operator/issues
   source:
   - https://github.com/marcusboden/headscale-k8s-operator
-  upstream:
-  - https://headscale.net/
   - https://github.com/juanfont/headscale
 
 base: ubuntu@24.04
@@ -37,16 +35,19 @@ config:
         Configures the log level of headscale.
       default: "info"
       type: string
-    port:
-      description: |
-        The port the headscale server listens on. Do I even need this? I shouldn't, with traefik...
-      default: 8080
-      type: int
-    hostname:
+    name:
       description: |
         Hostname of the headscale server
       default: headscale
       type: string
+    policy:
+      description: |
+        Policy file to use, see https://headscale.net/stable/ref/acls/
+      type: string
+    magic-dns:
+      description: Name of the tld for the magic DNS. Set to an empty string to disable magic dns
+      type: string
+      default: headscale
 
 containers:
   headscale:

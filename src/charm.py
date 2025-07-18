@@ -16,84 +16,11 @@ import dataclasses
 from typing import Any, Dict, List, cast
 import socket
 
-from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer
+from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent, TraefikRouteProviderDataRemovedEvent
+
+from headscale import HeadscaleConfig
 
 logger = logging.getLogger(__name__)
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class HeadscaleConfig:
-    """Configuration for the Headscale server."""
-
-    port: int = 8080
-    external_url: str = "headscale"
-
-    def generate_config(self) -> Dict[str, Any]:
-        """Generates config file str.
-
-        Returns:
-            A dict of the config to be rendered as yaml.
-        """
-        config = {
-                "server_url": f"http://{external_url}",
-                "listen_addr": f"0.0.0.0:{self.port}",
-                "metrics_listen_addr": "0.0.0.0:9090",
-                "noise": {
-                    "private_key_path": "/var/lib/headscale/noise_private.key"
-                },
-                "prefixes": {
-                    "v4": "100.64.0.0/10",
-                    "v6": "fd7a:115c:a1e0::/48",
-                    "allocation": "sequential",
-                },
-                "derp": {
-                    "server": {
-                        "enabled": False
-                    },
-                    "urls": [
-                        "https://controlplane.tailscale.com/derpmap/default"
-                    ],
-                    "auto_update_enabled": True,
-                    "update_frequency": "24h"
-                },
-                "disable_check_updates": False,
-                "ephemeral_node_inactivity_timeout": "30m",
-                "database": {
-                    "type": "sqlite",
-                    "debug": "false",
-                    "sqlite": {
-                        "path": "/var/lib/headscale/db.sqlite",
-                        "write_ahead_log": True,
-                        "wal_autocheckpoint": 1000
-                    },
-                },
-                "log": {
-                    "format": "text",
-                    "level": "debug"
-                },
-                "policy": {
-                    "mode": "database"
-                },
-                "dns": {
-                    "magic_dns": True,
-                    "base_domain": "mytest.com",
-                    "override_local_dns": False,
-                    "nameservers": {
-                        "global": [
-                            "1.1.1.1", 
-                            "1.0.0.1"
-                        ]
-                    }
-                },
-                "unix_socket": "/var/run/headscale/headscale.sock",
-                "unix_socket_permission": "0770"
-        }
-        return config
-
-
-    def __post_init__(self):
-        """Validate the configuration."""
-        if self.port == 22:
-            raise ValueError('Invalid port number, 22 is reserved for SSH')
 
 class HeadscaleCharm(ops.CharmBase):
     """Charm the application."""
@@ -108,17 +35,19 @@ class HeadscaleCharm(ops.CharmBase):
         self.framework.observe(self.ingress.on.ready, self._on_ingress_ready)
 
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
-        self._render_config()
         self._setup_ingress()
+        self._render_config()
         self._update_layer_and_restart()
 
-    def _on_ingress_ready(self, event: IngressPerAppReadyEvent):
+    def _on_ingress_ready(self, event: TraefikRouteProviderReadyEvent):
+        logger.debug("Running _on_ingress_ready")
         self._setup_ingress()
 
     def _render_config(self) -> None:
         try:
             config = self.load_config(HeadscaleConfig)
-            self.container.push("/etc/headscale/config.yaml", yaml.dump(config.generate_config()), make_dirs=True)
+            hs_conf = config.generate_config(self._external_name(config.name))
+            self.container.push("/etc/headscale/config.yaml", yaml.dump(hs_conf), make_dirs=True)
             self.container.restart(self.pebble_service_name)
 
             self.unit.set_ports(config.port)
@@ -126,6 +55,11 @@ class HeadscaleCharm(ops.CharmBase):
             logger.error('Configuration error: %s', e)
             self.unit.status = ops.BlockedStatus(str(e))
             return
+
+    def _external_name(self, name) -> str:
+        if self.ingress.is_ready and self.ingress.external_host:
+            return name+"."+self.ingress.external_host
+        return name
 
     def _ingress_config(self) -> dict:
         try:
@@ -147,7 +81,7 @@ class HeadscaleCharm(ops.CharmBase):
                 "entryPoints": ["web"],
                 "middlewares": list(middlewares.keys()),
                 "service": service_name,
-                "rule": f"Host(`{config.external_url}`)",
+                "rule": f"Host(`{self.external_name(config.name)}`)",
             },
         }
         services = { service_name: {
@@ -165,6 +99,7 @@ class HeadscaleCharm(ops.CharmBase):
             return
         if self.ingress.is_ready():
             self.ingress.submit_to_traefik(config=self._ingress_config())
+            self._render_config()
 
     def _update_layer_and_restart(self) -> None:
         self.unit.status = ops.MaintenanceStatus('Assembling Pebble layers')
