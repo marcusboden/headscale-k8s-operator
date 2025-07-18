@@ -8,7 +8,7 @@ description: |
   This charm deploys headscale on top of kubernetes.
 
 links:
-  contact: See github
+  contact: mailto:marcus.boden@canonical.com
   issues:
   - https://github.com/marcusboden/headscale-k8s-operator/issues
   source:
