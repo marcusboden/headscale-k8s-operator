@@ -11,14 +11,15 @@ import ops
 
 # A standalone module for workload-specific logic (no charming concerns):
 
-import yaml
-import dataclasses
-from typing import Any, Dict, List, cast
+from typing import Optional
 import socket
 
-from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent, TraefikRouteProviderDataRemovedEvent
+import pydantic
 
-from headscale import HeadscaleConfig
+from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent #, TraefikRouteProviderDataRemovedEvent
+from charms.grafana_agent.v0.cos_agent import COSAgentProvider
+
+from headscale import HeadscaleConfig, Headscale#, HeadscaleCmdResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,50 +29,73 @@ class HeadscaleCharm(ops.CharmBase):
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
         self.container = self.unit.get_container("headscale")
+        self.headscale = Headscale(self.container, self.load_config(HeadscaleConfig))
         self.pebble_service_name = 'headscale-server'
         self.ingress = TraefikRouteRequirer(self, self.model.get_relation("traefik-route"), "traefik-route", raw=False)
+        self.headscale.set_name(self._external_name())
+#        self._grafana_agent = COSAgentProvider(
+#            self,
+#            relation_name="cos-agent",
+#            metrics_endpoints=[
+#                {"path": "/metrics", "port": 9090},
+#                {"path": "/debug", "port": 9090},
+#            ]
+#        )
+
         framework.observe(self.on["headscale"].pebble_ready, self._on_pebble_ready)
         framework.observe(self.on.config_changed, self._on_config_changed)
-        self.framework.observe(self.ingress.on.ready, self._on_ingress_ready)
+        framework.observe(self.on.install, self._on_install)
+        framework.observe(self.ingress.on.ready, self._on_ingress_ready)
+        framework.observe(self.on["create-authkey"].action, self._on_create_authkey)
+        framework.observe(self.on["expire-authkey"].action, self._on_expire_authkey)
+        framework.observe(self.on["list-authkeys"].action, self._on_list_authkeys)
 
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
-        self._setup_ingress()
-        self._render_config()
+        self.headscale.render_config()
         self._update_layer_and_restart()
 
+    def _on_install(self, _: ops.InstallEvent) -> None:
+        self.headscale.setup()
+
     def _on_ingress_ready(self, event: TraefikRouteProviderReadyEvent):
-        logger.debug("Running _on_ingress_ready")
+        logger.debug(f"Running event: {event}")
         self._setup_ingress()
 
-    def _render_config(self) -> None:
-        try:
-            config = self.load_config(HeadscaleConfig)
-            hs_conf = config.generate_config(self._external_name(config.name))
-            self.container.push("/etc/headscale/config.yaml", yaml.dump(hs_conf), make_dirs=True)
-            self.container.restart(self.pebble_service_name)
-
-            self.unit.set_ports(config.port)
-        except ValueError as e:
-            logger.error('Configuration error: %s', e)
-            self.unit.status = ops.BlockedStatus(str(e))
+    def _on_create_authkey(self, event: ops.ActionEvent):
+        params = event.load_params(CreateAuthkeyAction, errors="fail")
+        event.log(f"Generating authkey with {params}")
+        ret = self.headscale.create_authkey(
+            tags=params.tags, expiry=params.expiry, reusable=params.reusable, ephemeral=params.ephemeral
+        )
+        if ret.exit_code:
+            event.fail(f"Failed to create auth key,\nStderr: {ret.stderr}\nStdout:{ret.stdout}")
             return
+        event.set_results({"result": ret.stdout})
 
-    def _external_name(self, name) -> str:
+    def _on_expire_authkey(self, event: ops.ActionEvent):
+        params = event.load_params(ExpireAuthkeyAction, errors="fail")
+        event.log(f"Expiring authkey: {params.authkey}")
+        ret = self.headscale.expire_authkey(authkey=params.authkey)
+        if ret.exit_code:
+            event.fail(f"Failed to expire auth key,\nStderr: {ret.stderr}\nStdout:{ret.stdout}")
+            return
+        event.set_results({"result": ret.stdout})
+
+    def _on_list_authkeys(self, event: ops.ActionEvent):
+        ret = self.headscale.list_authkeys()
+        if ret.exit_code:
+            event.fail(f"Failed to expire auth key,\nStderr: {ret.stderr}\nStdout:{ret.stdout}")
+            return
+        event.set_results({"result": ret.stdout})
+
+    def _external_name(self) -> str:
         if self.ingress.is_ready and self.ingress.external_host:
-            return name+"."+self.ingress.external_host
-        return name
+            return self.headscale.config.name+"."+self.ingress.external_host
+        return self.headscale.config.name
 
     def _ingress_config(self) -> dict:
-        try:
-            config = self.load_config(HeadscaleConfig)
-        except ValueError as e:
-            logger.error('Configuration error: %s', e)
-            self.unit.status = ops.BlockedStatus(str(e))
-            return
-
         router_name = f"juju-{self.model.name}-{self.model.app.name}-router"
         service_name = f"juju-{self.model.name}-{self.model.app.name}-service"
-        middle_name = f"juju-headers-{self.model.name}-{self.model.app.name}-websockets" 
         middlewares = { "juju-sidecar-headscale-headers":{
                 "headers": {"customRequestHeaders": {"Connection": "Upgrade"}},
             }
@@ -81,12 +105,12 @@ class HeadscaleCharm(ops.CharmBase):
                 "entryPoints": ["web"],
                 "middlewares": list(middlewares.keys()),
                 "service": service_name,
-                "rule": f"Host(`{self.external_name(config.name)}`)",
+                "rule": f"Host(`{self._external_name()}`)",
             },
         }
         services = { service_name: {
                 "loadBalancer": {
-                    "servers": [{"url": f"http://{socket.getfqdn()}:{config.port}"}],
+                    "servers": [{"url": f"http://{socket.getfqdn()}:80"}],
                 }
             }
         }
@@ -94,12 +118,12 @@ class HeadscaleCharm(ops.CharmBase):
         return {"http": {"routers": routers, "services": services, "middlewares": middlewares}}
 
 
-    def _setup_ingress(self):
+    def _setup_ingress(self) -> None:
         if not self.unit.is_leader():
             return
         if self.ingress.is_ready():
             self.ingress.submit_to_traefik(config=self._ingress_config())
-            self._render_config()
+            self.headscale.render_config()
 
     def _update_layer_and_restart(self) -> None:
         self.unit.status = ops.MaintenanceStatus('Assembling Pebble layers')
@@ -121,7 +145,7 @@ class HeadscaleCharm(ops.CharmBase):
             'summary': 'Headscale service',
             'description': 'Layer to start headscale',
             "services": {
-                self.pebble_service_name: {
+                self.headscale.pebble_service_name: {
                     "override": "replace",
                     "summary": "Start the headscale server",
                     "command": "/usr/bin/headscale serve",
@@ -131,10 +155,10 @@ class HeadscaleCharm(ops.CharmBase):
         }
         return ops.pebble.Layer(pebble_layer)
 
-    def _on_pebble_ready(self, event: ops.PebbleReadyEvent):
+    def _on_pebble_ready(self, _: ops.PebbleReadyEvent):
         """Handle pebble-ready event."""
         self.unit.status = ops.MaintenanceStatus("starting workload")
-        self._render_config()
+        self.headscale.render_config()
         self._update_layer_and_restart()
 
         self.wait_for_ready()
@@ -169,6 +193,18 @@ class HeadscaleCharm(ops.CharmBase):
         # The runtime error is for you (the charm author) to see, not for the user of the charm.
         # Make sure that this function waits long enough for the workload to be ready.
 
+
+class CreateAuthkeyAction(pydantic.BaseModel):
+    """Creates a PreAuthKey"""
+
+    tags: str
+    expiry: Optional[str] = "1h"
+    ephemeral: Optional[bool] = False
+    reusable: Optional[bool] = False
+
+class ExpireAuthkeyAction(pydantic.BaseModel):
+    """Expires a PreAuthKey"""
+    authkey: str
 
 if __name__ == "__main__":  # pragma: nocover
     ops.main(HeadscaleCharm)

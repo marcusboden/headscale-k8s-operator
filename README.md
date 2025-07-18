@@ -16,16 +16,26 @@ More information: https://charmhub.io/headscale-k8s
 This charm deploys headscale in kubernetes. It uses [this rock](http://github.com/marcusboden/headscale-rock) as a container.
 
 ## TODO:
-- policy Files
-- headacale actions
-    - user create, delete
-    - auth key handling
-    - remove node
-    - extend node
-- backup
-- metrics
+-[x] policy Files Done
+-[x] volume for db
+-[ ] headacale actions
+    -[x] auth key handling
+      - [x] creation
+      - [x] expiration
+      - [x] listing
+    -[ ] user list, delete 
+      - no creation b/c OIDC
+      - deletion might be nice if we want to force people to re-auth
+    -[ ] remove node
+    -[ ] extend node
+-[ ] backup
+    - stop/start or rsync_sqlite?
+-[ ] metrics
     - alerts for node expiration
-
+-[ ] headscale config check
+-[ ] headscale policy check
+  - i.e.
+-[ ] use internal storedstate to not render conf all the time
 
 ## Other resources
 

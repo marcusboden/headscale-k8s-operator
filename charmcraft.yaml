@@ -47,11 +47,14 @@ config:
     magic-dns:
       description: Name of the tld for the magic DNS. Set to an empty string to disable magic dns
       type: string
-      default: headscale
+      default: headscale.test
 
 containers:
   headscale:
     resource: headscale-image
+    mounts:
+    - storage: database
+      location: /var/lib/headscale
 
 resources:
   headscale-image:
@@ -62,7 +65,48 @@ resources:
       see https://github.com/marcusboden/headscale-rock
 
 requires:
-    traefik-route:
-        interface: traefik_route
-        limit: 1
-        optional: true
+  traefik-route:
+    interface: traefik_route
+    limit: 1
+    optional: true
+#  cos-agent:
+#    interface: cos_agent
+#    limit: 1
+#    optional: true
+
+storage:
+  database:
+    type: filesystem
+    description: Storage Volume for the sqlite database
+
+actions:
+  create-authkey:
+    description: Creates an Auth-key. We don't support different users.
+    params:
+      tags:
+        type: string
+        description: Tags to associate with this key
+      expiry:
+        type: string
+        description: Human-readable expiration of the key (e.g. 30m, 24h) (default "1h")
+      ephemeral:
+        description: Make the Auth-key ephemera;
+        type: boolean
+      reusable:
+        description: Make the Auth-key re-usable
+        type: boolean
+    required:
+    - tags
+    additionalProperties: false
+  expire-authkey:
+    description: Expires an Authkey
+    params:
+      authkey:
+        type: string
+        description: ID or Key to expire
+    required:
+      - authkey
+    additionalProperties: false
+  list-authkeys:
+    description: Lists all Authkeys
+    additionalProperties: false
