@@ -27,6 +27,12 @@ class HeadscaleConfig:
     log_level: str
     policy: Optional[str] = None
     magic_dns: str
+    oidc_issuer: Optional[str] = None
+    oidc_client_id: Optional[str] = None
+    oidc_secret: Optional[ops.Secret] = None
+    oidc_expiry: Optional[str] = None
+    oidc_scope: Optional[List[str]] = None
+    oidc_groups: Optional[List[str]] = None
 
     @staticmethod
     def static_config() -> Dict[str, Any]:
@@ -66,6 +72,22 @@ class HeadscaleConfig:
             "unix_socket_permission": "0770"
         }
 
+    def oidc(self) -> Dict:
+        if not self.oidc_issuer:
+            return {}
+        secret = self.oidc_secret.get_content()['oidc-secret']
+        oidc = {
+            "issuer": self.oidc_issuer,
+            "client_id": self.oidc_client_id,
+            "client_secret": secret,
+            "expiry": self.oidc_expiry or "1d",
+            "scope": self.oidc_scope or ["openid", "email", "profile"],
+            "only_start_if_oidc_is_available": True
+        }
+        if self.oidc_groups:
+            oidc["allowed_groups"] = self.oidc_groups
+        return { "oidc": oidc }
+
     def dns(self) -> Dict:
         if self.magic_dns == "":
             return { "magic_dns": False }
@@ -99,6 +121,16 @@ class HeadscaleConfig:
         if self.log_level not in levels:
             raise ValueError(f"Invalid log-level: '{self.log_level}' not in {", ".join(levels)}.")
 
+        oidc_configs = [
+            self.oidc_issuer, self.oidc_client_id, self.oidc_secret,
+            self.oidc_expiry, self.oidc_scope, self.oidc_groups
+        ]
+        if any(oidc_configs):
+            if not all([self.oidc_issuer, self.oidc_secret, self.oidc_client_id]):
+                logging.error(f"{self.oidc_issuer}, {self.oidc_secret}, {self.oidc_client_id}")
+                raise ValueError(f"Minimum OIDC Settings: issuer, secret, client_id")
+            if self.oidc_groups and not self.oidc_scope:
+                logger.warning("OIDC groups are set, but no scope.")
 
 class HeadscaleCmdResult(BaseModel):
     stderr: str
