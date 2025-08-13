@@ -13,6 +13,8 @@ import ops
 import yaml
 from typing import Any, Dict, Optional, List#, cast
 
+from certificates import (CERTIFICATE_NAME, CERTS_DIR_PATH, PRIVATE_KEY_NAME)
+
 logger = logging.getLogger(__name__)
 
 POLICY_PATH="/etc/headscale/policy.hujson"
@@ -70,6 +72,20 @@ class HeadscaleConfig:
         else:
             return { "magic_dns": True, "base_domain": self.magic_dns, "override_local_dns": False }
 
+    def tls(self, enabled: bool, name: str):
+        logger.info(f"generating TLS config. Enabled: {enabled}, Name: {name}")
+        if enabled:
+            return {
+                "tls_cert_path": f"{CERTS_DIR_PATH}/{CERTIFICATE_NAME}" if enabled else "",
+                "tls_key_path": f"{CERTS_DIR_PATH}/{PRIVATE_KEY_NAME}" if enabled else "",
+                "server_url": f"https://{name}:443",
+                "listen_addr": f"0.0.0.0:443",
+            }
+        return {
+            "server_url": f"http://{name}:80",
+            "listen_addr": f"0.0.0.0:80"
+        }
+
     def get_policy(self) -> Dict:
         if self.policy is not None:
             return {"mode": "file", "path": POLICY_PATH}
@@ -98,6 +114,7 @@ class Headscale:
         self.config: HeadscaleConfig = config
         self.pebble_service_name = 'headscale-server'
         self.name = config.name
+        self.tls = False
 
     def setup(self):
         ret = self._run_headscale_cmd(["user", "create", "admin"])

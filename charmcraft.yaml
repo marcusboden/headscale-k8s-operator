@@ -24,9 +24,15 @@ assumes:
   - juju >= 3.1
 
 parts:
-    charm:
-        source: .
-        source-type: local
+  charm:
+    source: .
+    source-type: local
+    charm-requirements:
+      - requirements.txt
+    build-packages:
+      - libssl-dev
+      - pkg-config
+
 
 config:
   options:
@@ -69,6 +75,9 @@ requires:
     interface: traefik_route
     limit: 1
     optional: true
+  certificates:
+    interface: tls-certificates
+    limit: 1
 #  cos-agent:
 #    interface: cos_agent
 #    limit: 1

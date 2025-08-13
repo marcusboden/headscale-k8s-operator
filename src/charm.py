@@ -31,7 +31,7 @@ class HeadscaleCharm(ops.CharmBase):
         self.container = self.unit.get_container("headscale")
         self.headscale = Headscale(self.container, self.load_config(HeadscaleConfig))
         self.pebble_service_name = 'headscale-server'
-        self.ingress = TraefikRouteRequirer(self, self.model.get_relation("traefik-route"), "traefik-route", raw=False)
+        self.ingress = TraefikRouteRequirer(self, self.model.get_relation("traefik-route"), "traefik-route", raw=True)
         self.headscale.set_name(self._external_name())
 #        self._grafana_agent = COSAgentProvider(
 #            self,
@@ -42,6 +42,12 @@ class HeadscaleCharm(ops.CharmBase):
 #            ]
 #        )
 
+
+        self.certs = CertHandler(self, self._external_name())
+        framework.observe(self.certs.certificates.on.certificate_available, self._on_certs_available)
+        framework.observe(self.on["certificates"].relation_departed, self._on_certs_removed)
+        framework.observe(self.on["certificates"].relation_changed, self._on_certs_available)
+
         framework.observe(self.on["headscale"].pebble_ready, self._on_pebble_ready)
         framework.observe(self.on.config_changed, self._on_config_changed)
         framework.observe(self.on.install, self._on_install)
@@ -51,8 +57,23 @@ class HeadscaleCharm(ops.CharmBase):
         framework.observe(self.on["list-authkeys"].action, self._on_list_authkeys)
 
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
+        self.headscale.set_name(self._external_name())
+        if self.certs.configure_certs():
+            self.headscale.tls = True
+        self._setup_ingress()
         self.headscale.render_config()
         self._update_layer_and_restart()
+
+    def _on_certs_available(self, _: ops.EventBase):
+        if self.certs.configure_certs():
+            self.headscale.tls = True
+        self.headscale.render_config()
+
+    def _on_certs_removed(self, _: ops.EventBase):
+        logger.info("Running on_certs_removed")
+        self.headscale.tls = False
+        self.certs.remove_certs()
+        self.headscale.render_config()
 
     def _on_install(self, _: ops.InstallEvent) -> None:
         self.headscale.setup()
@@ -89,33 +110,40 @@ class HeadscaleCharm(ops.CharmBase):
         event.set_results({"result": ret.stdout})
 
     def _external_name(self) -> str:
-        if self.ingress.is_ready and self.ingress.external_host:
+        if self.ingress.is_ready() and self.ingress.external_host:
             return self.headscale.config.name+"."+self.ingress.external_host
         return self.headscale.config.name
 
     def _ingress_config(self) -> dict:
         router_name = f"juju-{self.model.name}-{self.model.app.name}-router"
         service_name = f"juju-{self.model.name}-{self.model.app.name}-service"
-        middlewares = { "juju-sidecar-headscale-headers":{
-                "headers": {"customRequestHeaders": {"Connection": "Upgrade"}},
-            }
-        }
-        routers = { 
+        routers = {
             router_name: {
                 "entryPoints": ["web"],
-                "middlewares": list(middlewares.keys()),
                 "service": service_name,
-                "rule": f"Host(`{self._external_name()}`)",
+                "rule": f"HostSNI(`{self._external_name()}`)",
             },
         }
+        if self.headscale.config.tls:
+            routers[router_name] |= {
+                "tls": { "passthrough": True },
+                "entryPoints": ["websecure"],
+            }
+            port = 443
+        else:
+            routers[router_name] |= {"entryPoints": ["web"]}
+            port = 80
+
+        rel = self.model.get_relation("traefik-route")
+        ip = self.model.get_binding(rel).network.bind_address
         services = { service_name: {
                 "loadBalancer": {
-                    "servers": [{"url": f"http://{socket.getfqdn()}:80"}],
+                    "servers": [{"address": f"{ip}:{port}"}],
                 }
             }
         }
 
-        return {"http": {"routers": routers, "services": services, "middlewares": middlewares}}
+        return {"tcp": {"routers": routers, "services": services}}
 
 
     def _setup_ingress(self) -> None:
@@ -158,6 +186,8 @@ class HeadscaleCharm(ops.CharmBase):
     def _on_pebble_ready(self, _: ops.PebbleReadyEvent):
         """Handle pebble-ready event."""
         self.unit.status = ops.MaintenanceStatus("starting workload")
+        if self.certs.configure_certs():
+            self.headscale.tls = True
         self.headscale.render_config()
         self._update_layer_and_restart()
 
