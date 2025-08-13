@@ -5,12 +5,16 @@
 
 The intention is that this module could be used outside the context of a charm.
 """
-
+import datetime
 import logging
 import dataclasses
+from pathlib import Path
+
 from pydantic import BaseModel
 import ops
 import yaml
+from tempfile import TemporaryDirectory
+from tarfile import TarFile
 from typing import Any, Dict, Optional, List#, cast
 
 from certificates import (CERTIFICATE_NAME, CERTS_DIR_PATH, PRIVATE_KEY_NAME)
@@ -18,6 +22,11 @@ from certificates import (CERTIFICATE_NAME, CERTS_DIR_PATH, PRIVATE_KEY_NAME)
 logger = logging.getLogger(__name__)
 
 POLICY_PATH="/etc/headscale/policy.hujson"
+SQLITE_PATH="/var/lib/headscale/db.sqlite"
+NOISE_KEY="/var/lib/headscale/noise_private.key"
+
+BACKUP_PATH=Path("/tmp/backup/")
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class HeadscaleConfig:
@@ -37,10 +46,9 @@ class HeadscaleConfig:
     @staticmethod
     def static_config() -> Dict[str, Any]:
         return {
-            "listen_addr": f"0.0.0.0:80",
             "metrics_listen_addr": "0.0.0.0:9090",
             "noise": {
-                "private_key_path": "/var/lib/headscale/noise_private.key"
+                "private_key_path": NOISE_KEY
             },
             "prefixes": {
                 "v4": "100.64.0.0/10",
@@ -63,7 +71,7 @@ class HeadscaleConfig:
                 "type": "sqlite",
                 "debug": "false",
                 "sqlite": {
-                    "path": "/var/lib/headscale/db.sqlite",
+                    "path": SQLITE_PATH,
                     "write_ahead_log": True,
                     "wal_autocheckpoint": 1000
                 },
@@ -132,9 +140,9 @@ class HeadscaleConfig:
             if self.oidc_groups and not self.oidc_scope:
                 logger.warning("OIDC groups are set, but no scope.")
 
-class HeadscaleCmdResult(BaseModel):
+class CmdResult(BaseModel):
     stderr: str
-    stdout: Dict
+    stdout: Dict | List
     exit_code: int
 
 
@@ -149,18 +157,32 @@ class Headscale:
         self.tls = False
 
     def setup(self):
-        ret = self._run_headscale_cmd(["user", "create", "admin"])
-        return ret["exit_code"] == 0
+        self._create_admin_user()
+
+    def _create_admin_user(self) -> None:
+        # check if user exists
+        ret = self._run_headscale_cmd(["user", "list"])
+        if ret.exit_code != 0:
+            raise Exception("Couldn't list users, bailing out")
+        logger.info(f"found users: {ret.stdout}")
+        if "charm-admin" not in [u["name"] for u in ret.stdout]:
+            logger.info(f"creating Admin user")
+            # create admin user
+            if self._run_headscale_cmd(["user", "create", "charm-admin"]).exit_code != 0:
+                raise Exception("Couldn't create admin user, bailing out")
 
     def set_name(self, name):
         self.name = name
 
     def _generate_config(self) -> Dict[str, Any]:
-        config = self.config.static_config()
-        config["dns"] = self.config.dns()
-        config["policy"] = self.config.get_policy()
-        config["server_url"] = f"http://{self.name}:80"
-        return config
+        config_dict = self.config.static_config()
+        config_dict["dns"] = self.config.dns()
+        config_dict["policy"] = self.config.get_policy()
+        # merge operator for dict: Didn't know that one!
+        config_dict |= self.config.oidc()
+        config_dict |= self.config.tls(self.tls, self.name)
+
+        return config_dict
 
     def render_config(self):
         try:
@@ -171,15 +193,18 @@ class Headscale:
         self.container.push("/etc/headscale/config.yaml", yaml.dump(self._generate_config()), make_dirs=True)
         self.container.restart(self.pebble_service_name)
 
-    def _run_headscale_cmd(self, command: List[str]) -> HeadscaleCmdResult:
-        hs_bin = "/usr/bin/headscale"
-        exc = self.container.exec([hs_bin, "--output", "yaml"] + command)
+    def _run_cmd(self, command: List[str]):
+        exc = self.container.exec(command)
         try:
             out, err = exc.wait_output()
-            return HeadscaleCmdResult(stderr=err, stdout=dictify(out), exit_code=0)
+            return CmdResult(stderr=err, stdout=dictify(out), exit_code=0)
         except ops.pebble.ExecError as e:
             logger.error(f"Command '{e.command}' returned {e.exit_code}.\nStdout: {e.stdout}\nStderr: {e.stderr}")
-            return HeadscaleCmdResult(stderr=e.stderr, stdout=dictify(e.stdout),exit_code=e.exit_code )
+            return CmdResult(stderr=e.stderr, stdout=dictify(e.stdout), exit_code=e.exit_code)
+
+    def _run_headscale_cmd(self, command: List[str]) -> CmdResult:
+        hs_bin = "/usr/bin/headscale"
+        return self._run_cmd([hs_bin, "--output", "yaml"] + command)
 
     def _check_policy(self):
         """Checks validity of hujson file by running it through hujsonfmt on the container"""
@@ -192,7 +217,7 @@ class Headscale:
                 logger.error(f"Policy file check returned {e.exit_code}. Command: {e.command}, Output: {e.stderr}")
                 raise ValueError("Policy file incorrect")
 
-    def create_authkey(self, tags: str, expiry: str, reusable: bool, ephemeral: bool) -> HeadscaleCmdResult:
+    def create_authkey(self, tags: str, expiry: str, reusable: bool, ephemeral: bool) -> CmdResult:
         cmd = ["preauthkey", "create"]
         # Headscale wants the tags prepended with "tag:"
         cmd += ["--tags", "tag:"+",tag:".join(tags.split(","))]
@@ -205,13 +230,13 @@ class Headscale:
 
         return self._run_headscale_cmd(cmd)
 
-    def expire_authkey(self, authkey: str) -> HeadscaleCmdResult:
+    def expire_authkey(self, authkey: str) -> CmdResult:
         cmd = ["preauthkey", "expire"]
         cmd += [authkey]
         cmd += ["-u", "1"]
         return self._run_headscale_cmd(cmd)
 
-    def list_authkeys(self) -> HeadscaleCmdResult:
+    def list_authkeys(self) -> CmdResult:
         return self._run_headscale_cmd(["preauthkey", "list", "-u", "1"])
 
     @staticmethod
@@ -220,14 +245,70 @@ class Headscale:
         # You'll need to implement this function (or remove it if not needed).
         return "version one, mf"
 
-def dictify(out):
+    def restore_backup(self, backup_path: str) -> Path:
+        backup_tar_path = Path(backup_path)
+
+        # Do backup
+        backup = self.create_backup()
+
+        # stop headscale
+        self.container.stop(self.pebble_service_name)
+
+        # restore backup
+        with TemporaryDirectory() as d:
+            with TarFile.open(backup_tar_path) as t:
+                t.extractall(path=d)
+            self.container.push_path(source_path=Path(d) / "db.sqlite", dest_dir=Path(SQLITE_PATH).parent)
+            self.container.push_path(source_path=Path(d) / "noise_private.key", dest_dir=Path(NOISE_KEY).parent)
+
+
+        self.container.start(self.pebble_service_name)
+
+        # cleanup
+        backup_tar_path.unlink()
+        return backup
+
+    def create_backup(self) -> Path:
+        # Create sqlite backup
+        cmd = ['sqlite3_rsync', SQLITE_PATH, '/tmp/db.sqlite']
+        ret = self._run_cmd(cmd)
+        if ret.exit_code != 0:
+            raise Exception(f"Could not create backup. {ret}")
+
+        # Get Noise Key
+        self._run_cmd(['cp', NOISE_KEY, '/tmp/'])
+
+
+        # create tar from it
+        cmd = ['tar', '-czf', '/tmp/backup.tar.gz', '-C', '/tmp/', 'db.sqlite', 'noise_private.key']
+        ret = self._run_cmd(cmd)
+        if ret.exit_code != 0:
+            raise Exception(f"Could not tar backup. {ret}")
+
+        # clean up old backups
+        BACKUP_PATH.mkdir(parents=False, exist_ok=True)
+        for f in BACKUP_PATH.iterdir():
+            f.unlink()
+
+        # pull backup to charm container
+        self.container.pull_path(source_path='/tmp/backup.tar.gz', dest_dir=BACKUP_PATH)
+
+        # Rename with Timestamp
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_file = BACKUP_PATH / f'headscale-backup-{ts}.tar.gz'
+        Path(BACKUP_PATH / "backup.tar.gz").rename(backup_file)
+        return backup_file
+
+
+def dictify(out) -> Dict|List:
     """headscale doesn't always return proper yaml, so I can't trust it to be yamlable"""
     d = ""
     try:
         d = yaml.safe_load(out)
+        logger.debug(f"loaded yaml output: {d}")
     except yaml.YAMLError as e:
         logger.error(f"Invalid YAML: {out}.\n{e}")
     # well, a simple string is valid yaml :/
-    if not isinstance(d, dict):
+    if not isinstance(d, dict) and not isinstance(d, list):
         d = {"out": out}
     return d

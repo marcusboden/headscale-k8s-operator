@@ -6,20 +6,16 @@
 
 import logging
 import time
-
 import ops
-
-# A standalone module for workload-specific logic (no charming concerns):
-
 from typing import Optional
-import socket
-
 import pydantic
+import pathlib
 
 from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent #, TraefikRouteProviderDataRemovedEvent
-from charms.grafana_agent.v0.cos_agent import COSAgentProvider
+#from charms.grafana_agent.v0.cos_agent import COSAgentProvider
 
 from headscale import HeadscaleConfig, Headscale#, HeadscaleCmdResult
+from certificates import CertHandler
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +29,7 @@ class HeadscaleCharm(ops.CharmBase):
         self.pebble_service_name = 'headscale-server'
         self.ingress = TraefikRouteRequirer(self, self.model.get_relation("traefik-route"), "traefik-route", raw=True)
         self.headscale.set_name(self._external_name())
+
 #        self._grafana_agent = COSAgentProvider(
 #            self,
 #            relation_name="cos-agent",
@@ -55,6 +52,8 @@ class HeadscaleCharm(ops.CharmBase):
         framework.observe(self.on["create-authkey"].action, self._on_create_authkey)
         framework.observe(self.on["expire-authkey"].action, self._on_expire_authkey)
         framework.observe(self.on["list-authkeys"].action, self._on_list_authkeys)
+        framework.observe(self.on["create-backup"].action, self._on_create_backup)
+        framework.observe(self.on["restore-backup"].action, self._on_restore_backup)
 
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
         self.headscale.set_name(self._external_name())
@@ -76,7 +75,10 @@ class HeadscaleCharm(ops.CharmBase):
         self.headscale.render_config()
 
     def _on_install(self, _: ops.InstallEvent) -> None:
-        self.headscale.setup()
+        try:
+            self.headscale.setup()
+        except Exception as e:
+            logger.debug(f"Couldn't setup headscale: {e}")
 
     def _on_ingress_ready(self, event: TraefikRouteProviderReadyEvent):
         logger.debug(f"Running event: {event}")
@@ -108,6 +110,33 @@ class HeadscaleCharm(ops.CharmBase):
             event.fail(f"Failed to expire auth key,\nStderr: {ret.stderr}\nStdout:{ret.stdout}")
             return
         event.set_results({"result": ret.stdout})
+
+    def _on_create_backup(self, event: ops.ActionEvent):
+        try:
+            path = self.headscale.create_backup()
+        except Exception as e:
+            event.fail(f"Failed to create backup:\n{e}")
+            return
+        event.set_results({"result": f"Download backup with `juju scp {self.unit.name}:{path} {path.name}`",
+                           "path": path,
+                           "filename": {path.name}
+                           })
+
+
+    def _on_restore_backup(self, event: ops.ActionEvent):
+        params = event.load_params(RestoreBackupAction, errors="fail")
+        event.log(f"Restoring backup from path: {params.backup_path}")
+        try:
+            path = self.headscale.restore_backup(backup_path=params.backup_path)
+        except Exception as e:
+            event.fail(f"Failed to create backup:\n{e}")
+            return
+
+        event.set_results({"result": f"backup restored from {params.backup_path}",
+                           "backup": f"Download backup with `juju scp {self.unit.name}:{path} {path.name}`",
+                           "path": path,
+                           "filename": path.name,
+                           })
 
     def _external_name(self) -> str:
         if self.ingress.is_ready() and self.ingress.external_host:
@@ -192,6 +221,7 @@ class HeadscaleCharm(ops.CharmBase):
         self._update_layer_and_restart()
 
         self.wait_for_ready()
+        self.headscale.setup()
         #version = headscale.get_version()
         #if version is not None:
         #    self.unit.set_workload_version(version)
@@ -223,7 +253,6 @@ class HeadscaleCharm(ops.CharmBase):
         # The runtime error is for you (the charm author) to see, not for the user of the charm.
         # Make sure that this function waits long enough for the workload to be ready.
 
-
 class CreateAuthkeyAction(pydantic.BaseModel):
     """Creates a PreAuthKey"""
 
@@ -235,6 +264,10 @@ class CreateAuthkeyAction(pydantic.BaseModel):
 class ExpireAuthkeyAction(pydantic.BaseModel):
     """Expires a PreAuthKey"""
     authkey: str
+
+class RestoreBackupAction(pydantic.BaseModel):
+    """Expires a PreAuthKey"""
+    backup_path: str
 
 if __name__ == "__main__":  # pragma: nocover
     ops.main(HeadscaleCharm)

@@ -28,13 +28,11 @@ This charm deploys headscale in kubernetes. It uses [this rock](http://github.co
       - deletion might be nice if we want to force people to re-auth
     -[ ] remove node
     -[ ] extend node
--[ ] backup
+-[x] backup
     - stop/start or rsync_sqlite?
 -[ ] metrics
     - alerts for node expiration
 -[ ] headscale config check
--[ ] headscale policy check
-  - i.e.
 -[ ] use internal storedstate to not render conf all the time
 
 ## Other resources

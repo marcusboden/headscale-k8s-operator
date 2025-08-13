@@ -54,6 +54,26 @@ config:
       description: Name of the tld for the magic DNS. Set to an empty string to disable magic dns
       type: string
       default: headscale.test
+    oidc_issuer:
+      description: OIDC issuer URL. Required if any other OIDC config options are set.
+      type: string
+    oidc_client_id:
+      description: OIDC Client ID. Required if any other OIDC config options are set.
+      type: string
+    oidc_secret:
+      description: OIDC Client Secret. Required if any other OIDC config options are set.
+      type: secret
+    oidc_expiry:
+      description: |
+        Expiration time of nodes added via OIDC. A value of 0 disables this.
+        Default: 1d, if nothing configured.
+      type: string
+    oidc_scope:
+      description: OIDC scopes. Default '["openid", "profile", "email"]'
+      type: string
+    oidc_groups:
+      description: Groups (as sent by the OIDC provider) that are allowed to login. If not set, all are allowed.
+      type: string
 
 containers:
   headscale:
@@ -114,8 +134,27 @@ actions:
         type: string
         description: ID or Key to expire
     required:
-      - authkey
+    - authkey
     additionalProperties: false
   list-authkeys:
     description: Lists all Authkeys
+    additionalProperties: false
+  create-backup:
+    description: |
+      Creates a backup including the database and the noise key
+      and places it into /tmp/backup/headscale-backup-<timestamp>.tar.gz.
+      
+      The operation returns a command to copy the backup off the machine.
+    additionalProperties: false
+  restore-backup:
+    description: |
+      Restores a backup created with the create-backup Action.
+      WARNING: THIS OVERWRITES THE CURRENT DATABASE!
+      (It does a backup first though, I'm not a monster!)
+    params:
+      backup-path:
+        type: string
+        description: Path to the backup file. You will have to manually copy it there first.
+    required:
+    - backup-path
     additionalProperties: false
