@@ -275,33 +275,28 @@ class Headscale:
 
     def create_backup(self) -> Path:
         # Create sqlite backup
-        cmd = ['sqlite3_rsync', SQLITE_PATH, '/tmp/db.sqlite']
+        remote_tmpdir = Path("/tmp")
+        cmd = ['sqlite3_rsync', str(SQLITE_PATH), str(remote_tmpdir / SQLITE_PATH.name)]
         ret = self._run_cmd(cmd)
         if ret.exit_code != 0:
             raise Exception(f"Could not create backup. {ret}")
-
-        # Get Noise Key
-        self._run_cmd(['cp', NOISE_KEY, '/tmp/'])
-
-
-        # create tar from it
-        cmd = ['tar', '-czf', '/tmp/backup.tar.gz', '-C', '/tmp/', 'db.sqlite', 'noise_private.key']
-        ret = self._run_cmd(cmd)
-        if ret.exit_code != 0:
-            raise Exception(f"Could not tar backup. {ret}")
 
         # clean up old backups
         BACKUP_PATH.mkdir(parents=False, exist_ok=True)
         for f in BACKUP_PATH.iterdir():
             f.unlink()
 
-        # pull backup to charm container
-        self.container.pull_path(source_path='/tmp/backup.tar.gz', dest_dir=BACKUP_PATH)
-
-        # Rename with Timestamp
+        # Get Timestamp
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_file = BACKUP_PATH / f'headscale-backup-{ts}.tar.gz'
-        Path(BACKUP_PATH / "backup.tar.gz").rename(backup_file)
+
+        # create tar
+        with TemporaryDirectory() as d:
+            self.container.pull_path(source_path=[remote_tmpdir / SQLITE_PATH.name, NOISE_KEY],dest_dir=d)
+            with TarFile.open(backup_file, 'w:gz') as t:
+                t.add(Path(d) / SQLITE_PATH.name, arcname=SQLITE_PATH.name)
+                t.add(Path(d) / NOISE_KEY.name, arcname=NOISE_KEY.name)
+
         return backup_file
 
 
