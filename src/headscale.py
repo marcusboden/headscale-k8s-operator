@@ -102,7 +102,7 @@ class HeadscaleConfig:
         else:
             return { "magic_dns": True, "base_domain": self.magic_dns, "override_local_dns": False }
 
-    def tls(self, enabled: bool, name: str):
+    def tls(self, enabled: bool, name: str) -> Dict[str, str]:
         logger.info(f"generating TLS config. Enabled: {enabled}, Name: {name}")
         if enabled:
             return {
@@ -115,6 +115,10 @@ class HeadscaleConfig:
             "server_url": f"http://{name}:80",
             "listen_addr": f"0.0.0.0:80"
         }
+
+    def log(self) -> Dict[str, Dict[str, str]]:
+        return {"log": {"level": self.log_level}}
+
 
     def get_policy(self) -> Dict:
         if self.policy is not None:
@@ -181,6 +185,7 @@ class Headscale:
         # merge operator for dict: Didn't know that one!
         config_dict |= self.config.oidc()
         config_dict |= self.config.tls(self.tls, self.name)
+        config_dict |= self.config.log()
 
         return config_dict
 
