@@ -5,11 +5,11 @@
 """Charm the application."""
 
 import logging
+import os
 import time
 import ops
-from typing import Optional
+from typing import Optional, Dict
 import pydantic
-import pathlib
 
 from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent #, TraefikRouteProviderDataRemovedEvent
 #from charms.grafana_agent.v0.cos_agent import COSAgentProvider
@@ -210,7 +210,23 @@ class HeadscaleCharm(ops.CharmBase):
                 }
             }
         }
+
+        proxy = self._get_proxy_settings()
+        if proxy:
+            pebble_layer["services"][self.headscale.pebble_service_name]["environment"] = proxy
         return ops.pebble.Layer(pebble_layer)
+
+    @staticmethod
+    def _get_proxy_settings() -> Dict[str,str]:
+        settings = {
+            "http_proxy": os.environ.get("JUJU_CHARM_HTTP_PROXY"),
+            "https_proxy": os.environ.get("JUJU_CHARM_HTTPS_PROXY"),
+            "no_proxy": os.environ.get("JUJU_CHARM_NO_PROXY"),
+            "HTTP_PROXY": os.environ.get("JUJU_CHARM_HTTP_PROXY"),
+            "HTTPS_PROXY": os.environ.get("JUJU_CHARM_HTTPS_PROXY"),
+            "NO_PROXY": os.environ.get("JUJU_CHARM_NO_PROXY"),
+        }
+        return {k:v for k,v in settings.items() if v}
 
     def _on_pebble_ready(self, _: ops.PebbleReadyEvent):
         """Handle pebble-ready event."""
