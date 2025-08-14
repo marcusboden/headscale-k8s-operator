@@ -56,17 +56,18 @@ class HeadscaleCharm(ops.CharmBase):
         framework.observe(self.on["restore-backup"].action, self._on_restore_backup)
 
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
+        self._configure_and_restart()
+
+    def _on_certs_available(self, ev: ops.EventBase) -> None:
+        self._configure_and_restart()
+
+    def _configure_and_restart(self):
         self.headscale.set_name(self._external_name())
         if self.certs.configure_certs():
             self.headscale.tls = True
         self._setup_ingress()
         self.headscale.render_config()
         self._update_layer_and_restart()
-
-    def _on_certs_available(self, _: ops.EventBase):
-        if self.certs.configure_certs():
-            self.headscale.tls = True
-        self.headscale.render_config()
 
     def _on_certs_removed(self, _: ops.EventBase):
         logger.info("Running on_certs_removed")
