@@ -58,7 +58,7 @@ class HeadscaleCharm(ops.CharmBase):
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
         self._configure_and_restart()
 
-    def _on_certs_available(self, ev: ops.EventBase) -> None:
+    def _on_certs_available(self, _: ops.EventBase) -> None:
         self._configure_and_restart()
 
     def _configure_and_restart(self):
