@@ -21,9 +21,9 @@ from certificates import (CERTIFICATE_NAME, CERTS_DIR_PATH, PRIVATE_KEY_NAME)
 
 logger = logging.getLogger(__name__)
 
-POLICY_PATH="/etc/headscale/policy.hujson"
-SQLITE_PATH="/var/lib/headscale/db.sqlite"
-NOISE_KEY="/var/lib/headscale/noise_private.key"
+POLICY_PATH=Path("/etc/headscale/policy.hujson")
+SQLITE_PATH=Path("/var/lib/headscale/db.sqlite")
+NOISE_KEY=Path("/var/lib/headscale/noise_private.key")
 
 BACKUP_PATH=Path("/tmp/backup/")
 
@@ -48,7 +48,7 @@ class HeadscaleConfig:
         return {
             "metrics_listen_addr": "0.0.0.0:9090",
             "noise": {
-                "private_key_path": NOISE_KEY
+                "private_key_path": str(NOISE_KEY)
             },
             "prefixes": {
                 "v4": "100.64.0.0/10",
@@ -71,7 +71,7 @@ class HeadscaleConfig:
                 "type": "sqlite",
                 "debug": "false",
                 "sqlite": {
-                    "path": SQLITE_PATH,
+                    "path": str(SQLITE_PATH),
                     "write_ahead_log": True,
                     "wal_autocheckpoint": 1000
                 },
@@ -122,7 +122,7 @@ class HeadscaleConfig:
 
     def get_policy(self) -> Dict:
         if self.policy is not None:
-            return {"mode": "file", "path": POLICY_PATH}
+            return {"mode": "file", "path": str(POLICY_PATH)}
         else:
             return {"mode": "database"}
 
@@ -215,7 +215,7 @@ class Headscale:
         """Checks validity of hujson file by running it through hujsonfmt on the container"""
         if self.config.policy:
             self.container.push(POLICY_PATH, self.config.policy, make_dirs=True)
-            exc = self.container.exec(['hujsonfmt', POLICY_PATH])
+            exc = self.container.exec(['hujsonfmt', str(POLICY_PATH)])
             try:
                 exc.wait()
             except ops.pebble.ExecError as e:
