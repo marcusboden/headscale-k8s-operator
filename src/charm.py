@@ -12,7 +12,8 @@ from typing import Optional, Dict
 import pydantic
 
 from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent #, TraefikRouteProviderDataRemovedEvent
-#from charms.grafana_agent.v0.cos_agent import COSAgentProvider
+from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointProvider
+from charms.loki_k8s.v1.loki_push_api import LogForwarder
 
 from headscale import HeadscaleConfig, Headscale#, HeadscaleCmdResult
 from certificates import CertHandler
@@ -30,15 +31,18 @@ class HeadscaleCharm(ops.CharmBase):
         self.ingress = TraefikRouteRequirer(self, self.model.get_relation("traefik-route"), "traefik-route", raw=True)
         self.headscale.set_name(self._external_name())
 
-#        self._grafana_agent = COSAgentProvider(
-#            self,
-#            relation_name="cos-agent",
-#            metrics_endpoints=[
-#                {"path": "/metrics", "port": 9090},
-#                {"path": "/debug", "port": 9090},
-#            ]
-#        )
+        self.metrics_endpoint = MetricsEndpointProvider(self,jobs=[
+            {
+                "static_configs": [ { "targets": ["*:9090", "*:9091"] } ],
+                "job_name": "headscale_scraper",
+                "metrics_path": "/metrics",
+            }
+        ])
 
+        self._log_forwarder = LogForwarder(
+            self,
+            relation_name="logging"  # optional, defaults to `logging`
+        )
 
         self.certs = CertHandler(self, self._external_name())
         framework.observe(self.certs.certificates.on.certificate_available, self._on_certs_available)
@@ -208,10 +212,16 @@ class HeadscaleCharm(ops.CharmBase):
                     "summary": "Start the headscale server",
                     "command": "/usr/bin/headscale serve",
                     "startup": "enabled",
+                },
+                "exporter": {
+                    "override": "replace",
+                    "summary": "Start the exporter",
+                    "command": "headscale_exporter",
+                    "startup": "enabled",
+                    "requires": [self.headscale.pebble_service_name]
                 }
             }
         }
-
         proxy = self._get_proxy_settings()
         if proxy:
             pebble_layer["services"][self.headscale.pebble_service_name]["environment"] = proxy

@@ -29,9 +29,11 @@ This charm deploys headscale in kubernetes. It uses [this rock](http://github.co
     -[ ] remove node
     -[ ] extend node
 -[x] backup
-    - stop/start or rsync_sqlite?
 -[ ] metrics
-    - alerts for node expiration
+    - [x] basic metrics
+    - [x] node count exporter
+    - [x] logs
+    - [ ] alerts for node expiration
 -[ ] headscale config check
 -[ ] use internal storedstate to not render conf all the time
 
