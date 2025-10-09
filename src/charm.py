@@ -44,7 +44,7 @@ class HeadscaleCharm(ops.CharmBase):
             relation_name="logging"  # optional, defaults to `logging`
         )
 
-        self.certs = CertHandler(self, self._external_name())
+        self.certs = CertHandler(self, self._external_name(), [self.on.config_changed, self.ingress.on.ready])
         framework.observe(self.certs.certificates.on.certificate_available, self._on_certs_available)
         framework.observe(self.on["certificates"].relation_departed, self._on_certs_removed)
         framework.observe(self.on["certificates"].relation_changed, self._on_certs_available)

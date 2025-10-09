@@ -1,3 +1,4 @@
+from yaml import Event
 
 from charms.tls_certificates_interface.v4.tls_certificates import (
     Certificate,
@@ -17,19 +18,18 @@ CERTIFICATE_NAME = "headscale.pem"
 logger = logging.getLogger(__name__)
 
 class CertHandler:
-    def __init__(self, charm: ops.CharmBase, name: str):
+    def __init__(self, charm: ops.CharmBase, name: str, events: list[ops.BoundEvent]):
         self.charm = charm
+        self.csra = CertificateRequestAttributes(common_name=name, sans_dns=frozenset({name}))
         self.certificates = TLSCertificatesRequiresV4(
                 charm=charm,
                 relationship_name="certificates",
-                certificate_requests=[CertificateRequestAttributes(common_name=name)],
+                certificate_requests=[self.csra],
                 mode=Mode.UNIT,
+                refresh_events=events,
             )
         self.container = charm.unit.get_container("headscale")
         self.name = name
-
-    def _get_certificate_request_attributes(self) -> CertificateRequestAttributes:
-        return CertificateRequestAttributes(common_name=self.name)
 
     def configure_certs(self) -> bool:
         if not self.container.can_connect():
@@ -42,7 +42,7 @@ class CertHandler:
             logger.info("Certs say: cert isn't available")
             return False
 
-        logger.info("Certs ready")
+        logger.info("Certs are ready")
         certificate_update_required = self._check_and_update_certificate()
         return True
 
@@ -54,9 +54,7 @@ class CertHandler:
         return bool(self.charm.model.relations.get(relation_name))
 
     def _certificate_is_available(self) -> bool:
-        cert, key = self.certificates.get_assigned_certificate(
-            certificate_request=self._get_certificate_request_attributes()
-        )
+        cert, key = self.certificates.get_assigned_certificate(certificate_request=self.csra)
         return bool(cert and key)
 
     def _check_and_update_certificate(self) -> bool:
@@ -70,9 +68,7 @@ class CertHandler:
         Returns:
             bool: True if either the certificate or the private key was updated, False otherwise.
         """
-        provider_certificate, private_key = self.certificates.get_assigned_certificate(
-            certificate_request=self._get_certificate_request_attributes()
-        )
+        provider_certificate, private_key = self.certificates.get_assigned_certificate(certificate_request=self.csra)
         if not provider_certificate or not private_key:
             logger.debug("Certificate or private key is not available")
             return False
