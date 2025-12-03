@@ -74,6 +74,15 @@ config:
     oidc_groups:
       description: Groups (as sent by the OIDC provider) that are allowed to login. If not set, all are allowed.
       type: string
+    derp_map:
+      description: YAML formatted custom DERP map.
+      type: string
+    derp_map_url:
+      description: |
+        URL from which to download the DERP map. Will be merged with the custom derp map, if provided.
+        No default DERP map is used in this charm. If you want to use the Tailscale's DERP servers, you can add the URL here.
+        But keep in mind that that would not be nice.
+      type: string
 
 containers:
   headscale:

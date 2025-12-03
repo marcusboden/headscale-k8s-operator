@@ -22,6 +22,7 @@ from certificates import (CERTIFICATE_NAME, CERTS_DIR_PATH, PRIVATE_KEY_NAME)
 logger = logging.getLogger(__name__)
 
 POLICY_PATH=Path("/etc/headscale/policy.hujson")
+DERP_PATH=Path("/etc/headscale/derp.yaml")
 SQLITE_PATH=Path("/var/lib/headscale/db.sqlite")
 NOISE_KEY=Path("/var/lib/headscale/noise_private.key")
 
@@ -42,6 +43,8 @@ class HeadscaleConfig:
     oidc_expiry: Optional[str] = None
     oidc_scope: Optional[List[str]] = None
     oidc_groups: Optional[List[str]] = None
+    derp_map: Optional[str] = None
+    derp_map_url: Optional[str] = None
 
     @staticmethod
     def static_config() -> Dict[str, Any]:
@@ -54,16 +57,6 @@ class HeadscaleConfig:
                 "v4": "100.64.0.0/10",
                 "v6": "fd7a:115c:a1e0::/48",
                 "allocation": "sequential",
-            },
-            "derp": {
-                "server": {
-                    "enabled": False
-                },
-                "urls": [
-                    "https://controlplane.tailscale.com/derpmap/default"
-                ],
-                "auto_update_enabled": True,
-                "update_frequency": "24h"
             },
             "disable_check_updates": False,
             "ephemeral_node_inactivity_timeout": "30m",
@@ -119,6 +112,15 @@ class HeadscaleConfig:
     def log(self) -> Dict[str, Dict[str, str]]:
         return {"log": {"level": self.log_level}}
 
+    def derp(self) -> Dict[str, Dict[str, Any]]:
+        derp = dict({ "server": {"enabled": False}})
+        if self.derp_map_url:
+            derp["urls"] = [self.derp_map_url]
+            derp["auto_update_enabled"] = True
+            derp["update_frequency"] = "24h"
+        if self.derp_map:
+            derp["paths"] = str(DERP_PATH)
+        return { "derp": derp }
 
     def get_policy(self) -> Dict:
         if self.policy is not None:
@@ -143,6 +145,13 @@ class HeadscaleConfig:
                 raise ValueError(f"Minimum OIDC Settings: issuer, secret, client_id")
             if self.oidc_groups and not self.oidc_scope:
                 logger.warning("OIDC groups are set, but no scope.")
+        if self.derp_map:
+            try:
+                yaml.safe_load(self.derp_map)
+            except yaml.YAMLError as exc:
+                logger.error("derp map is not valid yaml")
+                raise exc
+
 
 class CmdResult(BaseModel):
     stderr: str
@@ -186,7 +195,7 @@ class Headscale:
         config_dict |= self.config.oidc()
         config_dict |= self.config.tls(self.tls, self.name)
         config_dict |= self.config.log()
-
+        config_dict |= self.config.derp()
         return config_dict
 
     def render_config(self):
@@ -194,6 +203,10 @@ class Headscale:
             self._check_policy()
         except ValueError as e:
             raise e
+
+        if self.config.derp_map:
+            self.container.push(DERP_PATH, self.config.derp_map, make_dirs=True)
+            self.container.restart(self.pebble_service_name)
 
         self.container.push("/etc/headscale/config.yaml", yaml.dump(self._generate_config()), make_dirs=True)
         self.container.restart(self.pebble_service_name)
