@@ -54,30 +54,30 @@ config:
       description: Name of the tld for the magic DNS. Set to an empty string to disable magic dns
       type: string
       default: headscale.test
-    oidc_issuer:
+    oidc-issuer:
       description: OIDC issuer URL. Required if any other OIDC config options are set.
       type: string
-    oidc_client_id:
+    oidc-client-id:
       description: OIDC Client ID. Required if any other OIDC config options are set.
       type: string
-    oidc_secret:
+    oidc-secret:
       description: OIDC Client Secret. Required if any other OIDC config options are set.
       type: secret
-    oidc_expiry:
+    oidc-expiry:
       description: |
         Expiration time of nodes added via OIDC. A value of 0 disables this.
         Default: 1d, if nothing configured.
       type: string
-    oidc_scope:
+    oidc-scope:
       description: OIDC scopes. Default '["openid", "profile", "email"]'
       type: string
-    oidc_groups:
+    oidc-groups:
       description: Groups (as sent by the OIDC provider) that are allowed to login. If not set, all are allowed.
       type: string
-    derp_map:
+    derp-map:
       description: YAML formatted custom DERP map.
       type: string
-    derp_map_url:
+    derp-map-url:
       description: |
         URL from which to download the DERP map. Will be merged with the custom derp map, if provided.
         No default DERP map is used in this charm. If you want to use the Tailscale's DERP servers, you can add the URL here.
