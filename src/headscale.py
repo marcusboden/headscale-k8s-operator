@@ -58,7 +58,7 @@ class HeadscaleConfig:
                 "v6": "fd7a:115c:a1e0::/48",
                 "allocation": "sequential",
             },
-            "disable_check_updates": False,
+            "disable_check_updates": True,
             "ephemeral_node_inactivity_timeout": "30m",
             "database": {
                 "type": "sqlite",
