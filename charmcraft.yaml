@@ -83,6 +83,15 @@ config:
         No default DERP map is used in this charm. If you want to use the Tailscale's DERP servers, you can add the URL here.
         But keep in mind that that would not be nice.
       type: string
+    dns-extra-records:
+      description: |
+        YAML formatted list of extra records. Each entry containing a dict with "name", "type", and "value" defined.
+        Details at https://headscale.net/stable/ref/dns/#setting-extra-dns-records
+        Example record
+        - name: "grafana.customer.headscale"
+          type: "A"
+          value: "http://1.2.3.4/cos-ha-grafana"
+      type: string
 
 containers:
   headscale:

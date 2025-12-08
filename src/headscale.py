@@ -90,10 +90,12 @@ class HeadscaleConfig:
         return { "oidc": oidc }
 
     def dns(self) -> Dict:
-        if self.magic_dns == "":
-            return { "magic_dns": False }
-        else:
-            return { "magic_dns": True, "base_domain": self.magic_dns, "override_local_dns": False }
+        dns_dict = {"magic_dns": False}
+        if self.dns_extra_records:
+            dns_dict |= {"extra_records": yaml.safe_load(self.dns_extra_records)}
+        if self.magic_dns != "":
+            dns_dict |= {"magic_dns": True, "base_domain": self.magic_dns, "override_local_dns": False}
+        return dns_dict
 
     def tls(self, enabled: bool, name: str) -> Dict[str, str]:
         logger.info(f"generating TLS config. Enabled: {enabled}, Name: {name}")
