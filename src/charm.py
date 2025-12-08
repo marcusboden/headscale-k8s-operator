@@ -51,6 +51,7 @@ class HeadscaleCharm(ops.CharmBase):
 
         framework.observe(self.on["headscale"].pebble_ready, self._on_pebble_ready)
         framework.observe(self.on.config_changed, self._on_config_changed)
+        framework.observe(self.on.secret_changed, self._on_secret_changed)
         framework.observe(self.on.install, self._on_install)
         framework.observe(self.ingress.on.ready, self._on_ingress_ready)
         framework.observe(self.on["create-authkey"].action, self._on_create_authkey)
@@ -59,10 +60,16 @@ class HeadscaleCharm(ops.CharmBase):
         framework.observe(self.on["create-backup"].action, self._on_create_backup)
         framework.observe(self.on["restore-backup"].action, self._on_restore_backup)
 
+
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
         self._configure_and_restart()
 
     def _on_certs_available(self, _: ops.EventBase) -> None:
+        self._configure_and_restart()
+
+    def _on_secret_changed(self, event: ops.SecretChangedEvent) -> None:
+        # set secret revision to latest
+        event.secret.get_content(refresh=True)
         self._configure_and_restart()
 
     def _configure_and_restart(self):
