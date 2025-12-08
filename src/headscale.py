@@ -154,6 +154,8 @@ class HeadscaleConfig:
             except yaml.YAMLError as exc:
                 logger.error("derp map is not valid yaml")
                 raise exc
+        if not self.derp_map and not self.derp_map_url:
+            raise ValueError(f"Either derp-map or derp-map-url must be set.")
 
         if self.dns_extra_records:
             try:
