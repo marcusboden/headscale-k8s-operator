@@ -45,6 +45,7 @@ class HeadscaleConfig:
     oidc_groups: Optional[List[str]] = None
     derp_map: Optional[str] = None
     derp_map_url: Optional[str] = None
+    dns_extra_records: Optional[str] = None
 
     @staticmethod
     def static_config() -> Dict[str, Any]:
@@ -154,6 +155,12 @@ class HeadscaleConfig:
                 logger.error("derp map is not valid yaml")
                 raise exc
 
+        if self.dns_extra_records:
+            try:
+                yaml.safe_load(self.dns_extra_records)
+            except yaml.YAMLError as exc:
+                logger.error("dns extra conf is not valid yaml")
+                raise exc
 
 class CmdResult(BaseModel):
     stderr: str
