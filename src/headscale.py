@@ -217,7 +217,6 @@ class Headscale:
 
         if self.config.derp_map:
             self.container.push(DERP_PATH, self.config.derp_map, make_dirs=True)
-            self.container.restart(self.pebble_service_name)
 
         self.container.push("/etc/headscale/config.yaml", yaml.dump(self._generate_config()), make_dirs=True)
         self.container.restart(self.pebble_service_name)
