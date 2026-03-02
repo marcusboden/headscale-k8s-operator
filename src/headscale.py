@@ -35,7 +35,7 @@ class HeadscaleConfig:
 
     name: str
     log_level: str
-    policy: Optional[str] = None
+    policy: Optional[str] = ""
     magic_dns: str
     oidc_issuer: Optional[str] = None
     oidc_client_id: Optional[str] = None
@@ -45,7 +45,7 @@ class HeadscaleConfig:
     oidc_groups: Optional[List[str]] = None
     derp_map: Optional[str] = None
     derp_map_url: Optional[str] = None
-    dns_extra_records: Optional[str] = None
+    dns_extra_records: Optional[str] = ""
 
     @staticmethod
     def static_config() -> Dict[str, Any]:
@@ -126,7 +126,7 @@ class HeadscaleConfig:
         return { "derp": derp }
 
     def get_policy(self) -> Dict:
-        if self.policy is not None:
+        if self.policy is not None and self.policy is not "":
             return {"mode": "file", "path": str(POLICY_PATH)}
         else:
             return {"mode": "database"}
@@ -266,12 +266,6 @@ class Headscale:
 
     def list_authkeys(self) -> CmdResult:
         return self._run_headscale_cmd(["preauthkey", "list", "-u", "1"])
-
-    @staticmethod
-    def get_version() -> str | None:
-        """Get the running version of the workload."""
-        # You'll need to implement this function (or remove it if not needed).
-        return "version one, mf"
 
     def restore_backup(self, backup_path: str) -> Path:
         backup_tar_path = Path(backup_path)
