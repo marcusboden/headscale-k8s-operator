@@ -46,6 +46,7 @@ class HeadscaleConfig:
     derp_map: Optional[str] = None
     derp_map_url: Optional[str] = None
     dns_extra_records: Optional[str] = ""
+    port: Optional[int] = None
 
     @staticmethod
     def static_config() -> Dict[str, Any]:
@@ -101,15 +102,17 @@ class HeadscaleConfig:
     def tls(self, enabled: bool, name: str) -> Dict[str, str]:
         logger.info(f"generating TLS config. Enabled: {enabled}, Name: {name}")
         if enabled:
+            port = self.port or 443
             return {
                 "tls_cert_path": f"{CERTS_DIR_PATH}/{CERTIFICATE_NAME}" if enabled else "",
                 "tls_key_path": f"{CERTS_DIR_PATH}/{PRIVATE_KEY_NAME}" if enabled else "",
-                "server_url": f"https://{name}:443",
-                "listen_addr": f"0.0.0.0:443",
+                "server_url": f"https://{name}:{port}",
+                "listen_addr": f"0.0.0.0:{port}",
             }
+        port = self.port or 80
         return {
-            "server_url": f"http://{name}:80",
-            "listen_addr": f"0.0.0.0:80"
+            "server_url": f"http://{name}:{port}",
+            "listen_addr": f"0.0.0.0:{port}"
         }
 
     def log(self) -> Dict[str, Dict[str, str]]:

@@ -2,3 +2,4 @@ ops>2,<4
 pyyaml
 pydantic
 cryptography
+packaging

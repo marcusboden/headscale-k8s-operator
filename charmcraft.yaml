@@ -92,6 +92,11 @@ config:
           type: "A"
           value: "http://1.2.3.4/cos-ha-grafana"
       type: string
+    port:
+      description: |
+        Custom port for the headscale server to listen on. If not set, defaults to 80 for HTTP and 443 for HTTPS.
+        When set, traefik will be configured with a custom entrypoint for this port.
+      type: int
 
 containers:
   headscale:

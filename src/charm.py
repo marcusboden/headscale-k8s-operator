@@ -9,6 +9,7 @@ import os
 import time
 import ops
 from typing import Optional, Dict
+from packaging.version import Version
 import pydantic
 
 from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent #, TraefikRouteProviderDataRemovedEvent
@@ -20,11 +21,15 @@ from certificates import CertHandler
 
 logger = logging.getLogger(__name__)
 
+HEADSCALE_VERSION = "0.26.1"
+
 class HeadscaleCharm(ops.CharmBase):
     """Charm the application."""
+    _stored = ops.StoredState()
 
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
+        self._stored.set_default(headscale_version=HEADSCALE_VERSION)
         self.container = self.unit.get_container("headscale")
         self.headscale = Headscale(self.container, self.load_config(HeadscaleConfig))
         self.pebble_service_name = 'headscale-server'
@@ -59,6 +64,7 @@ class HeadscaleCharm(ops.CharmBase):
         framework.observe(self.on["list-authkeys"].action, self._on_list_authkeys)
         framework.observe(self.on["create-backup"].action, self._on_create_backup)
         framework.observe(self.on["restore-backup"].action, self._on_restore_backup)
+        framework.observe(self.on.upgrade_charm, self._on_upgrade_charm)
 
 
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
@@ -66,6 +72,23 @@ class HeadscaleCharm(ops.CharmBase):
 
     def _on_certs_available(self, _: ops.EventBase) -> None:
         self._configure_and_restart()
+    
+    def _on_upgrade_charm(self, event):
+        old_version = self._stored.headscale_version
+        new_version = HEADSCALE_VERSION
+
+        if Version(new_version).minor > Version(old_version).minor + 1:
+            logger.error(f"Cannot Update from {old_version} to {new_version} directly. Please upgrade to an intermediate version first")
+            self.unit.status = ops.BlockedStatus(
+                f"Cannot upgrade from Headscale {old_version} to {new_version} directly. Check logs."
+            )
+            return
+        elif Version(new_version) < Version(old_version):
+            logger.info(f"Downgrading from Headscale {old_version} to {new_version} is not supported.")
+            return
+
+        # This is only reached if the upgrade is valid, so we can safely update the stored version.
+        self._stored.headscale_version = new_version
 
     def _on_secret_changed(self, event: ops.SecretChangedEvent) -> None:
         # set secret revision to latest
@@ -158,22 +181,34 @@ class HeadscaleCharm(ops.CharmBase):
     def _ingress_config(self) -> dict:
         router_name = f"juju-{self.model.name}-{self.model.app.name}-router"
         service_name = f"juju-{self.model.name}-{self.model.app.name}-service"
+        
+        # Determine port and entrypoint
+        if self.headscale.config.port:
+            # Custom port - create custom entrypoint name
+            port = self.headscale.config.port
+            entrypoint_name = f"custom{port}"
+            entrypoints = [entrypoint_name]
+        else:
+            # Default ports
+            if self.headscale.config.tls:
+                port = 443
+                entrypoints = ["websecure"]
+            else:
+                port = 80
+                entrypoints = ["web"]
+        
         routers = {
             router_name: {
-                "entryPoints": ["web"],
+                "entryPoints": entrypoints,
                 "service": service_name,
                 "rule": f"HostSNI(`{self._external_name()}`)",
             },
         }
+        
         if self.headscale.config.tls:
             routers[router_name] |= {
                 "tls": { "passthrough": True },
-                "entryPoints": ["websecure"],
             }
-            port = 443
-        else:
-            routers[router_name] |= {"entryPoints": ["web"]}
-            port = 80
 
         rel = self.model.get_relation("traefik-route")
         ip = self.model.get_binding(rel).network.bind_address
@@ -191,7 +226,24 @@ class HeadscaleCharm(ops.CharmBase):
         if not self.unit.is_leader():
             return
         if self.ingress.is_ready():
-            self.ingress.submit_to_traefik(config=self._ingress_config())
+            
+            # Separate dynamic and static configs
+            dynamic_config = self._ingress_config()
+            static_config = None
+            
+            # If we have custom port, add static entrypoint config
+            if self.headscale.config.port:
+                port = self.headscale.config.port
+                entrypoint_name = f"custom{port}"
+                static_config = {
+                    "entryPoints": {
+                        entrypoint_name: {
+                            "address": f":{port}"
+                        }
+                    }
+                }
+            
+            self.ingress.submit_to_traefik(config=dynamic_config, static=static_config)
             self.headscale.render_config()
 
     def _update_layer_and_restart(self) -> None:
