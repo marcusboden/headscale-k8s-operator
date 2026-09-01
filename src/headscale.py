@@ -104,8 +104,8 @@ class HeadscaleConfig:
         if enabled:
             port = self.port or 443
             return {
-                "tls_cert_path": f"{CERTS_DIR_PATH}/{CERTIFICATE_NAME}" if enabled else "",
-                "tls_key_path": f"{CERTS_DIR_PATH}/{PRIVATE_KEY_NAME}" if enabled else "",
+                "tls_cert_path": f"{CERTS_DIR_PATH}/{CERTIFICATE_NAME}",
+                "tls_key_path": f"{CERTS_DIR_PATH}/{PRIVATE_KEY_NAME}",
                 "server_url": f"https://{name}:{port}",
                 "listen_addr": f"0.0.0.0:{port}",
             }
@@ -119,17 +119,17 @@ class HeadscaleConfig:
         return {"log": {"level": self.log_level}}
 
     def derp(self) -> Dict[str, Dict[str, Any]]:
-        derp = dict({ "server": {"enabled": False}})
+        derp = {"server": {"enabled": False}}
         if self.derp_map_url:
             derp["urls"] = [self.derp_map_url]
             derp["auto_update_enabled"] = True
             derp["update_frequency"] = "24h"
         if self.derp_map:
-            derp["paths"] = str(DERP_PATH)
+            derp["paths"] = [str(DERP_PATH)]
         return { "derp": derp }
 
     def get_policy(self) -> Dict:
-        if self.policy is not None and self.policy is not "":
+        if self.policy is not None and self.policy != "":
             return {"mode": "file", "path": str(POLICY_PATH)}
         else:
             return {"mode": "database"}
@@ -147,7 +147,6 @@ class HeadscaleConfig:
         ]
         if any(oidc_configs):
             if not all([self.oidc_issuer, self.oidc_secret, self.oidc_client_id]):
-                logging.error(f"{self.oidc_issuer}, {self.oidc_secret}, {self.oidc_client_id}")
                 raise ValueError(f"Minimum OIDC Settings: issuer, secret, client_id")
             if self.oidc_groups and not self.oidc_scope:
                 logger.warning("OIDC groups are set, but no scope.")
@@ -186,6 +185,26 @@ class Headscale:
     def setup(self):
         self._create_admin_user()
 
+    def get_version(self) -> Optional[str]:
+        """Return the headscale version string from the running binary, or None on failure."""
+        ret = self._run_headscale_cmd(["version"])
+        if ret.exit_code != 0:
+            logger.error(f"Failed to get headscale version: {ret.stderr}")
+            return None
+        # `headscale --output yaml version` returns a mapping with "version" and
+        # "commit" keys. Older/other invocations may instead yield a plain
+        # scalar, which dictify() wraps as {"out": <string>}; handle both.
+        if isinstance(ret.stdout, dict) and "version" in ret.stdout:
+            raw = str(ret.stdout["version"]).strip()
+        elif isinstance(ret.stdout, dict) and "out" in ret.stdout:
+            raw = ret.stdout["out"].strip()
+        else:
+            logger.warning(f"Unexpected version output format: {ret.stdout}")
+            return None
+        # Take only the first token (resilient to build metadata like "0.26.1 (commit abc)"),
+        # then strip a leading 'v' if present.
+        return raw.split()[0].lstrip("v")
+
     def _create_admin_user(self) -> None:
         # check if user exists
         ret = self._run_headscale_cmd(["user", "list"])
@@ -205,33 +224,36 @@ class Headscale:
         config_dict = self.config.static_config()
         config_dict["dns"] = self.config.dns()
         config_dict["policy"] = self.config.get_policy()
-        # merge operator for dict: Didn't know that one!
         config_dict |= self.config.oidc()
         config_dict |= self.config.tls(self.tls, self.name)
         config_dict |= self.config.log()
         config_dict |= self.config.derp()
         return config_dict
 
-    def render_config(self):
+    def render_config(self, restart: bool = True) -> None:
         try:
             self._check_policy()
-        except ValueError as e:
-            raise e
-
-        if self.config.derp_map:
-            self.container.push(DERP_PATH, self.config.derp_map, make_dirs=True)
-
-        self.container.push("/etc/headscale/config.yaml", yaml.dump(self._generate_config()), make_dirs=True)
-        self.container.restart(self.pebble_service_name)
+            if self.config.derp_map:
+                self.container.push(DERP_PATH, self.config.derp_map, make_dirs=True)
+            self.container.push(
+                "/etc/headscale/config.yaml", yaml.dump(self._generate_config()), make_dirs=True
+            )
+            if restart:
+                self.container.restart(self.pebble_service_name)
+        except (ops.pebble.APIError, ops.pebble.ConnectionError, ops.pebble.ChangeError) as e:
+            raise RuntimeError(f"Failed to push config or restart headscale: {e}") from e
 
     def _run_cmd(self, command: List[str]):
-        exc = self.container.exec(command)
         try:
+            exc = self.container.exec(command)
             out, err = exc.wait_output()
             return CmdResult(stderr=err, stdout=dictify(out), exit_code=0)
         except ops.pebble.ExecError as e:
             logger.error(f"Command '{e.command}' returned {e.exit_code}.\nStdout: {e.stdout}\nStderr: {e.stderr}")
             return CmdResult(stderr=e.stderr, stdout=dictify(e.stdout), exit_code=e.exit_code)
+        except (ops.pebble.APIError, ops.pebble.ConnectionError) as e:
+            logger.error(f"Pebble error running {command}: {e}")
+            return CmdResult(stderr=str(e), stdout={"out": ""}, exit_code=1)
 
     def _run_headscale_cmd(self, command: List[str]) -> CmdResult:
         hs_bin = "/usr/bin/headscale"
@@ -246,7 +268,7 @@ class Headscale:
                 exc.wait()
             except ops.pebble.ExecError as e:
                 logger.error(f"Policy file check returned {e.exit_code}. Command: {e.command}, Output: {e.stderr}")
-                raise ValueError("Policy file incorrect")
+                raise RuntimeError("Policy file incorrect") from e
 
     def create_authkey(self, tags: str, expiry: str, reusable: bool, ephemeral: bool) -> CmdResult:
         cmd = ["preauthkey", "create"]
@@ -280,14 +302,14 @@ class Headscale:
         self.container.stop(self.pebble_service_name)
 
         # restore backup
-        with TemporaryDirectory() as d:
-            with TarFile.open(backup_tar_path) as t:
-                t.extractall(path=d)
-            self.container.push_path(source_path=Path(d) / "db.sqlite", dest_dir=Path(SQLITE_PATH).parent)
-            self.container.push_path(source_path=Path(d) / "noise_private.key", dest_dir=Path(NOISE_KEY).parent)
-
-
-        self.container.start(self.pebble_service_name)
+        try:
+            with TemporaryDirectory() as d:
+                with TarFile.open(backup_tar_path) as t:
+                    t.extractall(path=d)
+                self.container.push_path(source_path=Path(d) / "db.sqlite", dest_dir=Path(SQLITE_PATH).parent)
+                self.container.push_path(source_path=Path(d) / "noise_private.key", dest_dir=Path(NOISE_KEY).parent)
+        finally:
+            self.container.start(self.pebble_service_name)
 
         # cleanup
         backup_tar_path.unlink()

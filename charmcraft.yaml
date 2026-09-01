@@ -131,6 +131,10 @@ provides:
     limit: 1
     optional: true
 
+peers:
+  headscale-peers:
+    interface: headscale-peers
+
 storage:
   database:
     type: filesystem
@@ -185,4 +189,11 @@ actions:
         description: Path to the backup file. You will have to manually copy it there first.
     required:
     - backup-path
+    additionalProperties: false
+  proceed-upgrade:
+    description: |
+      Confirms that required manual steps for a breaking upgrade have been completed,
+      then runs the pre-upgrade backup, any automated migrations, and starts the new
+      headscale binary. Needed when the unit is in BlockedStatus after pebble-ready
+      detected a manual intervention requirement for this version upgrade.
     additionalProperties: false

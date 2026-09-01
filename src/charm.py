@@ -8,28 +8,25 @@ import logging
 import os
 import time
 import ops
-from typing import Optional, Dict
+from typing import Dict, Optional
 from packaging.version import Version
 import pydantic
 
-from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer,  TraefikRouteProviderReadyEvent #, TraefikRouteProviderDataRemovedEvent
+from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer, TraefikRouteProviderReadyEvent
 from charms.prometheus_k8s.v0.prometheus_scrape import MetricsEndpointProvider
 from charms.loki_k8s.v1.loki_push_api import LogForwarder
 
 from headscale import HeadscaleConfig, Headscale#, HeadscaleCmdResult
 from certificates import CertHandler
+from upgrade import Upgrader
 
 logger = logging.getLogger(__name__)
 
-HEADSCALE_VERSION = "0.26.1"
-
 class HeadscaleCharm(ops.CharmBase):
     """Charm the application."""
-    _stored = ops.StoredState()
 
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
-        self._stored.set_default(headscale_version=HEADSCALE_VERSION)
         self.container = self.unit.get_container("headscale")
         self.headscale = Headscale(self.container, self.load_config(HeadscaleConfig))
         self.pebble_service_name = 'headscale-server'
@@ -54,6 +51,10 @@ class HeadscaleCharm(ops.CharmBase):
         framework.observe(self.on["certificates"].relation_departed, self._on_certs_removed)
         framework.observe(self.on["certificates"].relation_changed, self._on_certs_available)
 
+        self.upgrade = Upgrader(self)
+        framework.observe(self.on.upgrade_charm, self.upgrade._on_upgrade_charm)
+        framework.observe(self.on["proceed-upgrade"].action, self.upgrade._on_proceed_upgrade)
+
         framework.observe(self.on["headscale"].pebble_ready, self._on_pebble_ready)
         framework.observe(self.on.config_changed, self._on_config_changed)
         framework.observe(self.on.secret_changed, self._on_secret_changed)
@@ -64,7 +65,6 @@ class HeadscaleCharm(ops.CharmBase):
         framework.observe(self.on["list-authkeys"].action, self._on_list_authkeys)
         framework.observe(self.on["create-backup"].action, self._on_create_backup)
         framework.observe(self.on["restore-backup"].action, self._on_restore_backup)
-        framework.observe(self.on.upgrade_charm, self._on_upgrade_charm)
 
 
     def _on_config_changed(self, _: ops.ConfigChangedEvent) -> None:
@@ -72,23 +72,6 @@ class HeadscaleCharm(ops.CharmBase):
 
     def _on_certs_available(self, _: ops.EventBase) -> None:
         self._configure_and_restart()
-    
-    def _on_upgrade_charm(self, event):
-        old_version = self._stored.headscale_version
-        new_version = HEADSCALE_VERSION
-
-        if Version(new_version).minor > Version(old_version).minor + 1:
-            logger.error(f"Cannot Update from {old_version} to {new_version} directly. Please upgrade to an intermediate version first")
-            self.unit.status = ops.BlockedStatus(
-                f"Cannot upgrade from Headscale {old_version} to {new_version} directly. Check logs."
-            )
-            return
-        elif Version(new_version) < Version(old_version):
-            logger.info(f"Downgrading from Headscale {old_version} to {new_version} is not supported.")
-            return
-
-        # This is only reached if the upgrade is valid, so we can safely update the stored version.
-        self._stored.headscale_version = new_version
 
     def _on_secret_changed(self, event: ops.SecretChangedEvent) -> None:
         # set secret revision to latest
@@ -96,28 +79,50 @@ class HeadscaleCharm(ops.CharmBase):
         self._configure_and_restart()
 
     def _configure_and_restart(self):
+        """Render config and restart the workload, unless the unit is blocked.
+
+        If the unit is already in BlockedStatus (e.g. a version mismatch or a
+        blocked upgrade), skip touching the workload entirely. Without this
+        guard, an unrelated event (config-changed, secret-changed, etc.) could
+        silently restart Pebble with whatever image is currently attached even
+        though the charm has deliberately decided not to activate it -- which
+        can have irreversible side effects (e.g. the headscale binary
+        auto-migrating the sqlite schema forward on start), poisoning any
+        later attempt to correctly resolve the block.
+        """
+        if isinstance(self.unit.status, ops.BlockedStatus):
+            logger.warning(
+                "Unit is blocked (%s); skipping config/restart.", self.unit.status.message
+            )
+            return
         self.headscale.set_name(self._external_name())
         if self.certs.configure_certs():
             self.headscale.tls = True
         self._setup_ingress()
-        self.headscale.render_config()
-        self._update_layer_and_restart()
+        try:
+            self.headscale.render_config(restart=False)
+        except RuntimeError as e:
+            logger.error(f"Failed to push config: {e}")
+            self.unit.status = ops.BlockedStatus("Failed to write config. Check logs.")
+            return
+        if not self._update_layer_and_restart():
+            return
 
     def _on_certs_removed(self, _: ops.EventBase):
         logger.info("Running on_certs_removed")
         self.headscale.tls = False
         self.certs.remove_certs()
-        self.headscale.render_config()
+        self._configure_and_restart()
 
     def _on_install(self, _: ops.InstallEvent) -> None:
         try:
             self.headscale.setup()
         except Exception as e:
-            logger.debug(f"Couldn't setup headscale: {e}")
+            logger.warning(f"Couldn't setup headscale: {e}")
 
     def _on_ingress_ready(self, event: TraefikRouteProviderReadyEvent):
         logger.debug(f"Running event: {event}")
-        self._setup_ingress()
+        self._configure_and_restart()
 
     def _on_create_authkey(self, event: ops.ActionEvent):
         params = event.load_params(CreateAuthkeyAction, errors="fail")
@@ -142,7 +147,7 @@ class HeadscaleCharm(ops.CharmBase):
     def _on_list_authkeys(self, event: ops.ActionEvent):
         ret = self.headscale.list_authkeys()
         if ret.exit_code:
-            event.fail(f"Failed to expire auth key,\nStderr: {ret.stderr}\nStdout:{ret.stdout}")
+            event.fail(f"Failed to list auth keys,\nStderr: {ret.stderr}\nStdout:{ret.stdout}")
             return
         event.set_results({"result": ret.stdout})
 
@@ -153,8 +158,8 @@ class HeadscaleCharm(ops.CharmBase):
             event.fail(f"Failed to create backup:\n{e}")
             return
         event.set_results({"result": f"Download backup with `juju scp {self.unit.name}:{path} {path.name}`",
-                           "path": path,
-                           "filename": {path.name}
+                           "path": str(path),
+                           "filename": path.name
                            })
 
 
@@ -164,12 +169,12 @@ class HeadscaleCharm(ops.CharmBase):
         try:
             path = self.headscale.restore_backup(backup_path=params.backup_path)
         except Exception as e:
-            event.fail(f"Failed to create backup:\n{e}")
+            event.fail(f"Failed to restore backup:\n{e}")
             return
 
         event.set_results({"result": f"backup restored from {params.backup_path}",
                            "backup": f"Download backup with `juju scp {self.unit.name}:{path} {path.name}`",
-                           "path": path,
+                           "path": str(path),
                            "filename": path.name,
                            })
 
@@ -244,9 +249,8 @@ class HeadscaleCharm(ops.CharmBase):
                 }
             
             self.ingress.submit_to_traefik(config=dynamic_config, static=static_config)
-            self.headscale.render_config()
 
-    def _update_layer_and_restart(self) -> None:
+    def _update_layer_and_restart(self, set_active: bool = True) -> bool:
         self.unit.status = ops.MaintenanceStatus('Assembling Pebble layers')
         try:
             self.container.add_layer('base', self._get_pebble_layer(), combine=True)
@@ -255,13 +259,16 @@ class HeadscaleCharm(ops.CharmBase):
             self.container.replan()
             logger.info(f"Replanned with '{self.pebble_service_name}' service")
 
-            self.unit.status = ops.ActiveStatus()
+            if set_active:
+                self.unit.status = ops.ActiveStatus()
+            return True
         except (ops.pebble.APIError, ops.pebble.ConnectionError) as e:
-            logger.info('Unable to connect to Pebble: %s', e)
+            logger.warning('Unable to connect to Pebble: %s', e)
             self.unit.status = ops.MaintenanceStatus('Waiting for Pebble in workload container')
+            return False
 
     def _get_pebble_layer(self) -> ops.pebble.Layer:
-        """A Pebble layer for the FastAPI demo services."""
+        """Return the Pebble layer for all workload services."""
         pebble_layer: ops.pebble.LayerDict = {
             'summary': 'Headscale service',
             'description': 'Layer to start headscale',
@@ -298,31 +305,66 @@ class HeadscaleCharm(ops.CharmBase):
         }
         return {k:v for k,v in settings.items() if v}
 
-    def _on_pebble_ready(self, _: ops.PebbleReadyEvent):
-        """Handle pebble-ready event."""
+    def _start_and_activate(self) -> bool:
+        """Start headscale via pebble, wait for readiness, run setup, set active.
+
+        Returns True on success. Sets BlockedStatus and returns False on any failure.
+        """
+        if not self._update_layer_and_restart(set_active=False):
+            return False
+        try:
+            self.wait_for_ready()
+        except RuntimeError as e:
+            logger.error(f"Workload did not become ready: {e}")
+            self.unit.status = ops.BlockedStatus("Workload not ready after start. Check logs.")
+            return False
+        try:
+            self.headscale.setup()
+        except Exception as e:
+            logger.error(f"Workload setup failed: {e}")
+            self.unit.status = ops.BlockedStatus("Workload setup failed. Check logs.")
+            return False
+        self.unit.status = ops.ActiveStatus()
+        return True
+
+    def _on_pebble_ready(self, _: ops.PebbleReadyEvent) -> None:
         self.unit.status = ops.MaintenanceStatus("starting workload")
         if self.certs.configure_certs():
             self.headscale.tls = True
-        self.headscale.render_config()
-        self._update_layer_and_restart()
+        try:
+            self.headscale.render_config(restart=False)
+        except RuntimeError as e:
+            logger.error(f"Failed to write headscale config at pebble-ready: {e}")
+            self.unit.status = ops.MaintenanceStatus("Failed to write config; waiting for pebble.")
+            return
 
-        self.wait_for_ready()
-        self.headscale.setup()
-        #version = headscale.get_version()
-        #if version is not None:
-        #    self.unit.set_workload_version(version)
-        self.unit.status = ops.ActiveStatus()
+        running_v_str = self.headscale.get_version()
+        if running_v_str is None:
+            logger.warning("Could not determine headscale version; starting without version checks.")
+            self._start_and_activate()
+            return
+
+        running_v = Version(running_v_str)
+        self.unit.set_workload_version(str(running_v))
+
+        self.upgrade.handle_pebble_ready(running_v)
 
     def is_ready(self) -> bool:
         """Check whether the workload is ready to use."""
-        # We'll first check whether all Pebble services are running.
-        for name, service_info in self.container.get_services().items():
+        try:
+            services = self.container.get_services()
+        except (ops.pebble.APIError, ops.pebble.ConnectionError):
+            return False
+        if not services:
+            return False
+        for name, service_info in services.items():
             if not service_info.is_running():
                 logger.info("the workload is not ready (service '%s' is not running)", name)
                 return False
-        # The Pebble services are running, but the workload might not be ready to use.
-        # So we'll check whether all Pebble 'ready' checks are passing.
-        checks = self.container.get_checks(level=ops.pebble.CheckLevel.READY)
+        try:
+            checks = self.container.get_checks(level=ops.pebble.CheckLevel.READY)
+        except (ops.pebble.APIError, ops.pebble.ConnectionError):
+            return False
         for check_info in checks.values():
             if check_info.status != ops.pebble.CheckStatus.UP:
                 return False
@@ -336,8 +378,6 @@ class HeadscaleCharm(ops.CharmBase):
             time.sleep(1)
         logger.error("the workload was not ready within the expected time")
         raise RuntimeError("workload is not ready")
-        # The runtime error is for you (the charm author) to see, not for the user of the charm.
-        # Make sure that this function waits long enough for the workload to be ready.
 
 class CreateAuthkeyAction(pydantic.BaseModel):
     """Creates a PreAuthKey"""
@@ -352,7 +392,7 @@ class ExpireAuthkeyAction(pydantic.BaseModel):
     authkey: str
 
 class RestoreBackupAction(pydantic.BaseModel):
-    """Expires a PreAuthKey"""
+    """Restores a previously created backup."""
     backup_path: str
 
 if __name__ == "__main__":  # pragma: nocover
