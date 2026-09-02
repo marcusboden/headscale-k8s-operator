@@ -190,3 +190,29 @@ def test_skip_minor_blocked(
     _refresh(juju, app, built_charm, built_rock, "0.27.0")
     _wait_active(juju, app)
     assert _workload_version(juju, app) == "0.27.0"
+
+
+@pytest.mark.juju_setup
+def test_minor_upgrade_skips_intermediate_patches(
+    juju: jubilant.Juju,
+    built_charm: BuiltCharm,
+    built_rock: BuiltRock,
+) -> None:
+    """A direct 0.28.0 -> 0.29.3 refresh succeeds end-to-end against a real cluster.
+
+    Headscale 0.29.0 added its own internal upgrade-path enforcement,
+    independent of this charm's: it now also refuses to start on a
+    skipped-minor-version jump. This test exercises that real headscale
+    behavior (not just this charm's own gating, already covered at the unit
+    level) by refreshing directly from 0.28.0 to 0.29.3 -- a single minor
+    step (28 -> 29) that skips the intermediate 0.29.0, 0.29.1, and 0.29.2
+    patch releases (and their charm revisions/builds) entirely, since patch
+    releases don't need to be applied sequentially, only major/minor do.
+    """
+    app = "headscale-minor-patch-skip"
+    _deploy(juju, app, built_charm, built_rock, "0.28.0")
+    assert _workload_version(juju, app) == "0.28.0"
+
+    _refresh(juju, app, built_charm, built_rock, "0.29.3")
+    _wait_active(juju, app)
+    assert _workload_version(juju, app) == "0.29.3"

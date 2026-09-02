@@ -35,6 +35,90 @@ def _exec_returns(container: mock.MagicMock, stdout: str, stderr: str = "") -> N
     container.exec.return_value = exc
 
 
+class TestNodeConfig:
+    """Tests for HeadscaleConfig.node().
+
+    Headscale 0.29.0 moved node-key expiry and the ephemeral-node GC
+    timeout under a shared `node` config block, removing `oidc.expiry` and
+    deprecating the top-level `ephemeral_node_inactivity_timeout`.
+    """
+
+    @staticmethod
+    def _config(
+        oidc_issuer: str | None = None,
+        oidc_client_id: str | None = None,
+        oidc_secret: mock.MagicMock | None = None,
+        oidc_expiry: str | None = None,
+        node_expiry: str | None = None,
+    ) -> HeadscaleConfig:
+        return HeadscaleConfig(
+            name="headscale",
+            log_level="info",
+            magic_dns="",
+            derp_map_url="https://example.com/derp.yaml",
+            oidc_issuer=oidc_issuer,
+            oidc_client_id=oidc_client_id,
+            oidc_secret=oidc_secret,  # type: ignore[arg-type]  # MagicMock stands in for ops.Secret
+            oidc_expiry=oidc_expiry,
+            node_expiry=node_expiry,
+        )
+
+    def test_ephemeral_inactivity_timeout_always_present(self):
+        node = self._config().node()["node"]
+        assert node["ephemeral"] == {"inactivity_timeout": "30m"}
+
+    def test_no_expiry_configured_and_no_oidc(self):
+        node = self._config().node()["node"]
+        assert "expiry" not in node
+
+    def test_oidc_configured_defaults_to_1d(self):
+        secret = mock.MagicMock()
+        node = self._config(
+            oidc_issuer="https://issuer.example.com",
+            oidc_client_id="client-id",
+            oidc_secret=secret,
+        ).node()["node"]
+        assert node["expiry"] == "1d"
+
+    def test_oidc_expiry_used_as_fallback(self):
+        secret = mock.MagicMock()
+        node = self._config(
+            oidc_issuer="https://issuer.example.com",
+            oidc_client_id="client-id",
+            oidc_secret=secret,
+            oidc_expiry="12h",
+        ).node()["node"]
+        assert node["expiry"] == "12h"
+
+    def test_node_expiry_used_directly(self):
+        node = self._config(node_expiry="7d").node()["node"]
+        assert node["expiry"] == "7d"
+
+    def test_node_expiry_takes_precedence_over_oidc_expiry(self):
+        secret = mock.MagicMock()
+        node = self._config(
+            oidc_issuer="https://issuer.example.com",
+            oidc_client_id="client-id",
+            oidc_secret=secret,
+            node_expiry="7d",
+            oidc_expiry="12h",
+        ).node()["node"]
+        assert node["expiry"] == "7d"
+
+    def test_oidc_dict_no_longer_contains_expiry(self):
+        secret = mock.MagicMock()
+        secret.get_content.return_value = {"oidc-secret": "shh"}
+        config = self._config(
+            oidc_issuer="https://issuer.example.com",
+            oidc_client_id="client-id",
+            oidc_secret=secret,
+        )
+        assert "expiry" not in config.oidc()["oidc"]
+
+    def test_static_config_no_longer_contains_top_level_ephemeral_timeout(self):
+        assert "ephemeral_node_inactivity_timeout" not in HeadscaleConfig.static_config()
+
+
 class TestCreateAuthkey:
     """create_authkey is unaffected by 0.28: --user remains valid on `create`."""
 

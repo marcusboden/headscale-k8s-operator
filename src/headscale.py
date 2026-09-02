@@ -44,6 +44,7 @@ class HeadscaleConfig:
     oidc_expiry: Optional[str] = None
     oidc_scope: Optional[List[str]] = None
     oidc_groups: Optional[List[str]] = None
+    node_expiry: Optional[str] = None
     derp_map: Optional[str] = None
     derp_map_url: Optional[str] = None
     dns_extra_records: Optional[str] = ""
@@ -62,7 +63,6 @@ class HeadscaleConfig:
                 "allocation": "sequential",
             },
             "disable_check_updates": True,
-            "ephemeral_node_inactivity_timeout": "30m",
             "database": {
                 "type": "sqlite",
                 "debug": "false",
@@ -84,13 +84,36 @@ class HeadscaleConfig:
             "issuer": self.oidc_issuer,
             "client_id": self.oidc_client_id,
             "client_secret": secret,
-            "expiry": self.oidc_expiry or "1d",
             "scope": self.oidc_scope or ["openid", "email", "profile"],
             "only_start_if_oidc_is_available": True
         }
         if self.oidc_groups:
             oidc["allowed_groups"] = self.oidc_groups
         return { "oidc": oidc }
+
+    def node(self) -> Dict[str, Dict[str, Any]]:
+        """Build the `node` config block (default node-key expiry, ephemeral GC timeout).
+
+        Headscale 0.29.0 removed `oidc.expiry` in favor of a general
+        top-level `node.expiry` (applies to all registration methods,
+        though tagged preauth-key nodes are exempt regardless of what this
+        is set to). `node-expiry` is the up-to-date charm config option;
+        `oidc-expiry` is kept for backwards compatibility and is
+        deprecated. If both are set, `node-expiry` wins.
+
+        `ephemeral_node_inactivity_timeout` was also deprecated in favor
+        of the nested `node.ephemeral.inactivity_timeout` in the same
+        release.
+        """
+        node: Dict[str, Any] = {"ephemeral": {"inactivity_timeout": "30m"}}
+        expiry = self.node_expiry or self.oidc_expiry
+        if not expiry and self.oidc_issuer:
+            # Preserve the previous implicit default: only force an expiry
+            # when OIDC is configured and no explicit expiry was given.
+            expiry = "1d"
+        if expiry:
+            node["expiry"] = expiry
+        return {"node": node}
 
     def dns(self) -> Dict:
         dns_dict = {"magic_dns": False}
@@ -226,6 +249,7 @@ class Headscale:
         config_dict["dns"] = self.config.dns()
         config_dict["policy"] = self.config.get_policy()
         config_dict |= self.config.oidc()
+        config_dict |= self.config.node()
         config_dict |= self.config.tls(self.tls, self.name)
         config_dict |= self.config.log()
         config_dict |= self.config.derp()

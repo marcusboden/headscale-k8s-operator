@@ -65,8 +65,19 @@ config:
       type: secret
     oidc-expiry:
       description: |
+        Deprecated: use `node-expiry` instead. Kept for backwards compatibility;
+        if both are set, `node-expiry` takes precedence.
         Expiration time of nodes added via OIDC. A value of 0 disables this.
         Default: 1d, if nothing configured.
+      type: string
+    node-expiry:
+      description: |
+        Default expiration time for node keys (applies to all registration
+        methods; tagged nodes registered via a preauth key are exempt
+        regardless of this setting). A value of 0 disables this.
+        Default: 1d, if nothing configured and OIDC is set up; otherwise unset.
+        Replaces the deprecated `oidc-expiry` and takes precedence over it
+        if both are set.
       type: string
     oidc-scope:
       description: OIDC scopes. Default '["openid", "profile", "email"]'

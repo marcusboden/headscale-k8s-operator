@@ -312,12 +312,15 @@ class TestOnPebbleReady:
         """Exercise the real production 0.28 gate wiring, not just the mechanism.
 
         The real UPGRADE_PATH['0.28'] entry should only block if the policy
-        has a wildcard SSH destination.
+        has a wildcard SSH destination. HEADSCALE_VERSION is pinned to
+        "0.28.0" for this test so it keeps exercising the real 0.28 gate
+        entry regardless of whatever the current production version is.
         """
         state = deploy_and_activate(ctx)
         state = _state_with_version(state, "0.27.1")
 
         with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.28.0"),
             mock_version("0.28.0"),
             mock.patch.object(Headscale, "check_ssh_wildcard_policy", return_value="found it"),
         ):
@@ -332,6 +335,7 @@ class TestOnPebbleReady:
         state = _state_with_version(state, "0.27.1")
 
         with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.28.0"),
             mock_version("0.28.0"),
             mock.patch.object(Headscale, "check_ssh_wildcard_policy", return_value=None),
             mock_backup_and_setup(),

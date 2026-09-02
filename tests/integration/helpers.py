@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import uuid
 
 import pytest
 
-CHARM_HEADSCALE_VERSION_LINE = 'HEADSCALE_VERSION = "0.26.1"'
+HEADSCALE_VERSION_PATTERN = re.compile(r'HEADSCALE_VERSION = "[^"]+"')
 ROCK_SOURCE_TAG_LINE = "source-tag: v0.26.1"
 
 # Headscale fetches and validates the DERP map at startup (crash-looping on an
@@ -69,6 +70,20 @@ def _patch_file(path: pathlib.Path, old: str, new: str) -> None:
         raise RuntimeError(f"Patch of {path} did not take effect: {new!r} not found after write.")
 
 
+def _patch_regex(path: pathlib.Path, pattern: re.Pattern[str], replacement: str) -> None:
+    """Replace the first match of `pattern` in `path` with `replacement`.
+
+    Unlike `_patch_file`, this doesn't need to know the *current* value --
+    just the shape of the line -- so it doesn't need updating every time the
+    real value (e.g. HEADSCALE_VERSION) is bumped in the repo.
+    """
+    content = path.read_text()
+    patched, count = pattern.subn(replacement, content, count=1)
+    if count == 0:
+        raise RuntimeError(f"Pattern {pattern.pattern!r} not found in {path}.")
+    path.write_text(patched)
+
+
 def _single_glob_match(directory: pathlib.Path, pattern: str) -> pathlib.Path:
     """Return the single file matching `pattern` in `directory`, or raise."""
     matches = list(directory.glob(pattern))
@@ -100,9 +115,9 @@ def build_charm_at_version(version: str, tmp_path_factory: pytest.TempPathFactor
     tmp_dir = tmp_path_factory.mktemp(f"charm-{version}")
     shutil.copytree(_CHARM_REPO_ROOT, tmp_dir, dirs_exist_ok=True, ignore=_CHARM_COPY_IGNORE)
 
-    _patch_file(
+    _patch_regex(
         tmp_dir / "src" / "upgrade.py",
-        CHARM_HEADSCALE_VERSION_LINE,
+        HEADSCALE_VERSION_PATTERN,
         f'HEADSCALE_VERSION = "{version}"',
     )
 

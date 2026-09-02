@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-HEADSCALE_VERSION = "0.28.0"
+HEADSCALE_VERSION = "0.29.3"
 
 
 @dataclasses.dataclass
