@@ -134,7 +134,15 @@ class Upgrader(ops.Object):
         relation.data[self._charm.app]["upgrade_acknowledged"] = value
 
     def _blocked_version_jump(self, old_v: Version, new_v: Version) -> Optional[str]:
-        """Return a BlockedStatus message if the version jump is not allowed, else None."""
+        """Return a BlockedStatus message if the version jump is not allowed, else None.
+
+        Per headscale's own upgrade policy, major and minor releases must be
+        applied one at a time, but patch releases don't need to be applied
+        sequentially -- e.g. 0.28.0 -> 0.29.3 is fine, skipping 0.28.1,
+        0.28.2, 0.29.0, 0.29.1, 0.29.2 entirely, since only the minor
+        component (28 -> 29) advances by one step. Patch is intentionally
+        never checked here; do not add patch-sequencing logic.
+        """
         if new_v < old_v:
             return f"Downgrade {old_v} → {new_v} not supported. Restore previous charm."
         if new_v.major != old_v.major:

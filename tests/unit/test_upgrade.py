@@ -226,6 +226,29 @@ class TestOnPebbleReady:
         assert setup.called
         assert _get_stored_version(out) == "0.27.0"
 
+    def test_minor_upgrade_skips_intermediate_patches(self, ctx):
+        """Patch releases don't need to be applied sequentially, only minor/major do.
+
+        Per headscale's own upgrade policy, 0.28.0 -> 0.29.3 is a single
+        minor-version step (28 -> 29) and must not be blocked, even though
+        it skips 0.28.1, 0.28.2, 0.29.0, 0.29.1, and 0.29.2 entirely.
+        """
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.28.0")
+
+        with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.29.3"),
+            mock_version("0.29.3"),
+            mock_wait_for_ready(),
+        ):
+            with mock_backup_and_setup() as (create_backup, setup):
+                out = ctx.run(ctx.on.pebble_ready(state.get_container("headscale")), state)
+
+        assert out.unit_status == testing.ActiveStatus()
+        assert create_backup.called
+        assert setup.called
+        assert _get_stored_version(out) == "0.29.3"
+
     def test_newer_version_manual_gate_unacknowledged(self, ctx):
         """A manual gate without acknowledgement blocks pebble-ready."""
         state = deploy_and_activate(ctx)
