@@ -162,11 +162,11 @@ actions:
   expire-authkey:
     description: Expires an Authkey
     params:
-      authkey:
-        type: string
-        description: ID or Key to expire
+      authkey-id:
+        type: integer
+        description: Numeric ID of the key to expire (see list-authkeys)
     required:
-    - authkey
+    - authkey-id
     additionalProperties: false
   list-authkeys:
     description: Lists all Authkeys

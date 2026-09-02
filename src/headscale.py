@@ -6,6 +6,7 @@
 The intention is that this module could be used outside the context of a charm.
 """
 import datetime
+import json
 import logging
 import dataclasses
 from pathlib import Path
@@ -283,14 +284,53 @@ class Headscale:
 
         return self._run_headscale_cmd(cmd)
 
-    def expire_authkey(self, authkey: str) -> CmdResult:
-        cmd = ["preauthkey", "expire"]
-        cmd += [authkey]
-        cmd += ["-u", "1"]
-        return self._run_headscale_cmd(cmd)
+    def expire_authkey(self, authkey_id: int) -> CmdResult:
+        """Expire a preauthkey by its numeric ID.
+
+        Headscale >=0.28.0 replaced the key-string + `--user` based
+        `preauthkey expire` invocation with ID-only lookup
+        (`preauthkey expire --id <ID>`). Use `list_authkeys()` to find the ID.
+        """
+        return self._run_headscale_cmd(["preauthkey", "expire", "--id", str(authkey_id)])
 
     def list_authkeys(self) -> CmdResult:
-        return self._run_headscale_cmd(["preauthkey", "list", "-u", "1"])
+        """List all preauthkeys.
+
+        Headscale >=0.28.0 removed the `--user` filter from `preauthkey list`;
+        it now always lists every key for every user, system-wide.
+        """
+        return self._run_headscale_cmd(["preauthkey", "list"])
+
+    def check_ssh_wildcard_policy(self) -> Optional[str]:
+        """Return a warning if the configured policy has a wildcard SSH destination.
+
+        Headscale >=0.28.0 rejects ACL policies containing an SSH rule with a
+        wildcard ("*") destination at load time (see the 0.28.0 release
+        notes). Returns None if there's no policy configured, if none of its
+        SSH rules use a wildcard destination, or if the policy couldn't be
+        parsed (fail open -- this is a best-effort heads-up, not validation).
+        """
+        if not self.config.policy:
+            return None
+        try:
+            self.container.push(POLICY_PATH, self.config.policy, make_dirs=True)
+            exc = self.container.exec(["hujsonfmt", "-s", str(POLICY_PATH)])
+            out, _ = exc.wait_output()
+            parsed = json.loads(out)
+        except Exception as e:
+            logger.warning(f"Could not parse policy to check for SSH wildcard destinations: {e}")
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        for rule in parsed.get("ssh") or []:
+            if "*" in (rule.get("dst") or []):
+                return (
+                    "Configured policy has an SSH rule with a wildcard ('*') destination, "
+                    "which headscale 0.28+ rejects at startup. Update the policy config to "
+                    "use 'autogroup:member'/'autogroup:tagged'/specific tags instead, then "
+                    "run the proceed-upgrade action."
+                )
+        return None
 
     def restore_backup(self, backup_path: str) -> Path:
         backup_tar_path = Path(backup_path)

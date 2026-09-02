@@ -15,6 +15,16 @@ More information: https://charmhub.io/headscale-k8s
 
 This charm deploys headscale in kubernetes. It uses [this rock](http://github.com/marcusboden/headscale-rock) as a container.
 
+## Upgrading
+
+| Charm Revision | Headscale Image |
+|---|---|
+| <=14 | 6 |
+| 15 | 7 |
+| 16 | 8 |
+| 18 | 9 |
+| 19 | 10 |
+
 ## TODO:
 -[x] policy Files Done
 -[x] volume for db

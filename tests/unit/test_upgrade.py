@@ -63,7 +63,8 @@ class TestOnUpgradeCharm:
         """If HEADSCALE_VERSION hasn't changed, the handler is a no-op."""
         state = deploy_and_activate(ctx)
 
-        out = ctx.run(ctx.on.upgrade_charm(), state)
+        with mock.patch("upgrade.HEADSCALE_VERSION", BASE_VERSION):
+            out = ctx.run(ctx.on.upgrade_charm(), state)
 
         assert out.unit_status == testing.ActiveStatus()
 
@@ -115,6 +116,35 @@ class TestOnUpgradeCharm:
         assert isinstance(out.unit_status, testing.BlockedStatus)
         assert "Manual steps needed" in out.unit_status.message
 
+    def test_conditional_check_gate_blocked(self, ctx):
+        """A `check` callable returning a message should also block upgrade-charm."""
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.26.1")
+        path = {"0.27": UpgradeStep(check=lambda h: "wildcard SSH destination found")}
+
+        with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.27.0"),
+            mock.patch("upgrade.UPGRADE_PATH", path),
+        ):
+            out = ctx.run(ctx.on.upgrade_charm(), state)
+
+        assert isinstance(out.unit_status, testing.BlockedStatus)
+        assert "Manual steps needed" in out.unit_status.message
+
+    def test_conditional_check_gate_not_triggered(self, ctx):
+        """A `check` callable returning None should not block upgrade-charm."""
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.26.1")
+        path = {"0.27": UpgradeStep(check=lambda h: None)}
+
+        with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.27.0"),
+            mock.patch("upgrade.UPGRADE_PATH", path),
+        ):
+            out = ctx.run(ctx.on.upgrade_charm(), state)
+
+        assert not isinstance(out.unit_status, testing.BlockedStatus)
+
 
 class TestOnPebbleReady:
     """Tests for _on_pebble_ready version handling branches."""
@@ -151,6 +181,7 @@ class TestOnPebbleReady:
         state = deploy_and_activate(ctx)
 
         with (
+            mock.patch("upgrade.HEADSCALE_VERSION", BASE_VERSION),
             mock_version(BASE_VERSION),
             mock_backup_and_setup(),
             mock_wait_for_ready(),
@@ -213,6 +244,80 @@ class TestOnPebbleReady:
         assert isinstance(out.unit_status, testing.BlockedStatus)
         assert "Manual steps required" in out.unit_status.message
         assert not create_backup.called
+
+    def test_conditional_check_gate_blocked(self, ctx):
+        """A `check` callable returning a message blocks pebble-ready like manual_note."""
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.26.1")
+        path = {"0.27": UpgradeStep(check=lambda h: "wildcard SSH destination found")}
+
+        with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.27.0"),
+            mock.patch("upgrade.UPGRADE_PATH", path),
+            mock_version("0.27.0"),
+            mock_wait_for_ready(),
+        ):
+            with mock_backup_and_setup() as (create_backup, _):
+                out = ctx.run(ctx.on.pebble_ready(state.get_container("headscale")), state)
+
+        assert isinstance(out.unit_status, testing.BlockedStatus)
+        assert "Manual steps required" in out.unit_status.message
+        assert "wildcard SSH destination found" in out.unit_status.message
+        assert not create_backup.called
+
+    def test_conditional_check_gate_not_triggered_runs(self, ctx):
+        """A `check` callable returning None lets the upgrade proceed automatically."""
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.26.1")
+        path = {"0.27": UpgradeStep(check=lambda h: None)}
+
+        with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.27.0"),
+            mock.patch("upgrade.UPGRADE_PATH", path),
+            mock_version("0.27.0"),
+            mock_wait_for_ready(),
+        ):
+            with mock_backup_and_setup() as (create_backup, setup):
+                out = ctx.run(ctx.on.pebble_ready(state.get_container("headscale")), state)
+
+        assert out.unit_status == testing.ActiveStatus()
+        assert create_backup.called
+        assert setup.called
+        assert _get_stored_version(out) == "0.27.0"
+
+    def test_real_0_28_gate_blocks_on_wildcard_policy(self, ctx):
+        """Exercise the real production 0.28 gate wiring, not just the mechanism.
+
+        The real UPGRADE_PATH['0.28'] entry should only block if the policy
+        has a wildcard SSH destination.
+        """
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.27.1")
+
+        with (
+            mock_version("0.28.0"),
+            mock.patch.object(Headscale, "check_ssh_wildcard_policy", return_value="found it"),
+        ):
+            out = ctx.run(ctx.on.pebble_ready(state.get_container("headscale")), state)
+
+        assert isinstance(out.unit_status, testing.BlockedStatus)
+        assert "found it" in out.unit_status.message
+
+    def test_real_0_28_gate_allows_when_no_wildcard(self, ctx):
+        """The real 0.28 gate doesn't block deployments without an affected policy."""
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.27.1")
+
+        with (
+            mock_version("0.28.0"),
+            mock.patch.object(Headscale, "check_ssh_wildcard_policy", return_value=None),
+            mock_backup_and_setup(),
+            mock_wait_for_ready(),
+        ):
+            out = ctx.run(ctx.on.pebble_ready(state.get_container("headscale")), state)
+
+        assert out.unit_status == testing.ActiveStatus()
+        assert _get_stored_version(out) == "0.28.0"
 
     def test_blocked_version_jump_at_pebble_ready(self, ctx):
         """A version mismatch detected at pebble-ready blocks."""
@@ -365,8 +470,9 @@ class TestProceedUpgradeAction:
         """Failure when stored version already matches charm version."""
         state = deploy_and_activate(ctx)
 
-        with pytest.raises(testing.ActionFailed) as exc:
-            self._run_action(ctx, state)
+        with mock.patch("upgrade.HEADSCALE_VERSION", BASE_VERSION):
+            with pytest.raises(testing.ActionFailed) as exc:
+                self._run_action(ctx, state)
 
         assert "No upgrade in progress" in exc.value.message
 
@@ -437,6 +543,25 @@ class TestProceedUpgradeAction:
         state = deploy_and_activate(ctx)
         state = _state_with_version(state, "0.26.1")
         path = {"0.27": UpgradeStep(manual_note="Do operator things first")}
+
+        with (
+            mock.patch("upgrade.HEADSCALE_VERSION", "0.27.0"),
+            mock.patch("upgrade.UPGRADE_PATH", path),
+            mock_version("0.27.0"),
+            mock_backup_and_setup(),
+            mock_wait_for_ready(),
+        ):
+            out_state, results = self._run_action(ctx, state)
+
+        assert results["result"] == "Headscale upgraded from 0.26.1 to 0.27.0 successfully."
+        assert out_state.unit_status == testing.ActiveStatus()
+        assert _get_stored_version(out_state) == "0.27.0"
+
+    def test_conditional_check_gate_upgrade_succeeds(self, ctx):
+        """proceed-upgrade also works when the gate came from a `check` callable."""
+        state = deploy_and_activate(ctx)
+        state = _state_with_version(state, "0.26.1")
+        path = {"0.27": UpgradeStep(check=lambda h: "wildcard SSH destination found")}
 
         with (
             mock.patch("upgrade.HEADSCALE_VERSION", "0.27.0"),

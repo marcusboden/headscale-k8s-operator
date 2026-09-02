@@ -137,8 +137,8 @@ class HeadscaleCharm(ops.CharmBase):
 
     def _on_expire_authkey(self, event: ops.ActionEvent):
         params = event.load_params(ExpireAuthkeyAction, errors="fail")
-        event.log(f"Expiring authkey: {params.authkey}")
-        ret = self.headscale.expire_authkey(authkey=params.authkey)
+        event.log(f"Expiring authkey with ID: {params.authkey_id}")
+        ret = self.headscale.expire_authkey(authkey_id=params.authkey_id)
         if ret.exit_code:
             event.fail(f"Failed to expire auth key,\nStderr: {ret.stderr}\nStdout:{ret.stdout}")
             return
@@ -389,7 +389,7 @@ class CreateAuthkeyAction(pydantic.BaseModel):
 
 class ExpireAuthkeyAction(pydantic.BaseModel):
     """Expires a PreAuthKey"""
-    authkey: str
+    authkey_id: int
 
 class RestoreBackupAction(pydantic.BaseModel):
     """Restores a previously created backup."""

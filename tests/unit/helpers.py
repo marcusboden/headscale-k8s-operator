@@ -68,9 +68,16 @@ def deploy_and_activate(ctx: testing.Context[HeadscaleCharm]) -> testing.State:
     """Install the charm and bring the workload to ActiveStatus.
 
     Simulates a freshly deployed unit at the charm's bundled workload version.
+    Patches ``upgrade.HEADSCALE_VERSION`` to ``BASE_VERSION`` for the duration
+    of the install/pebble-ready sequence so this fixture stays a stable,
+    decoupled "old version" baseline regardless of whatever the real
+    production ``HEADSCALE_VERSION`` currently is -- tests build on top of
+    this by patching ``upgrade.HEADSCALE_VERSION`` again to simulate an
+    upgrade target.
     """
     state = base_state()
     with (
+        mock.patch("upgrade.HEADSCALE_VERSION", BASE_VERSION),
         mock_version(BASE_VERSION),
         mock_backup_and_setup(),
         mock_wait_for_ready(),

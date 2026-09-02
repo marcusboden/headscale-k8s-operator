@@ -25,28 +25,47 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-HEADSCALE_VERSION = "0.27.1"
+HEADSCALE_VERSION = "0.28.0"
 
 
 @dataclasses.dataclass
 class UpgradeStep:
     """Describes what the charm must do when upgrading TO this minor version.
 
-    manual_note: set this to block pebble-ready until the operator runs proceed-upgrade.
+    manual_note: set this to unconditionally block pebble-ready until the
+                 operator runs proceed-upgrade.
+    check:       callable evaluated against the live Headscale wrapper (config
+                 included) to *conditionally* decide whether a manual gate is
+                 needed -- return a blocking message, or None if this
+                 particular deployment isn't affected. Use this instead of
+                 manual_note when the risk depends on the operator's own
+                 configuration (e.g. their custom ACL policy content) rather
+                 than being universally true for every deployment.
     migration:   callable run automatically (after backup) before starting the new binary.
     """
 
     manual_note: Optional[str] = None
+    check: Optional[Callable[["Headscale"], Optional[str]]] = None
     migration: Optional[Callable[["Headscale"], None]] = None
+
+
+def _check_0_28_ssh_policy(headscale: "Headscale") -> Optional[str]:
+    """Only gate the 0.28 upgrade if this deployment's own policy is affected.
+
+    Headscale 0.28.0 rejects ACL policies with a wildcard ('*') SSH
+    destination at load time. The charm can see the configured policy (it's
+    a plain charm config option), so check it directly instead of blanket-
+    blocking every 0.28 upgrade regardless of whether the operator's policy
+    actually uses that pattern.
+    """
+    return headscale.check_ssh_wildcard_policy()
 
 
 # Keys are "<major>.<minor>" strings, e.g. "0.27".
 # Each entry covers the step of upgrading TO that minor version.
 UPGRADE_PATH: dict[str, UpgradeStep] = {
     # "0.27": UpgradeStep(migration=_migrate_0_27),
-    # "0.28": UpgradeStep(
-    #     manual_note="Expire all API keys before attaching the new image.",
-    # ),
+    "0.28": UpgradeStep(check=_check_0_28_ssh_policy),
 }
 
 
@@ -127,9 +146,21 @@ class Upgrader(ops.Object):
             )
         return None
 
-    def _has_manual_gate(self, new_v: Version) -> bool:
-        """Return True if the target version has a manual_note in UPGRADE_PATH."""
-        return bool(UPGRADE_PATH.get(f"{new_v.major}.{new_v.minor}", UpgradeStep()).manual_note)
+    def _manual_gate_reason(self, new_v: Version) -> Optional[str]:
+        """Return a manual-gate message if the target version requires one, else None.
+
+        Checks both an unconditional `manual_note` and a conditional `check`
+        callable (evaluated against the live Headscale wrapper) on the
+        matching UPGRADE_PATH entry, if any.
+        """
+        step = UPGRADE_PATH.get(f"{new_v.major}.{new_v.minor}")
+        if not step:
+            return None
+        if step.manual_note:
+            return step.manual_note
+        if step.check:
+            return step.check(self._charm.headscale)
+        return None
 
     def _on_upgrade_charm(self, event: ops.UpgradeCharmEvent) -> None:
         old_v = Version(self._get_stored_version())
@@ -147,8 +178,9 @@ class Upgrader(ops.Object):
 
         key = f"{new_v.major}.{new_v.minor}"
         step = UPGRADE_PATH.get(key)
-        if step and step.manual_note:
-            logger.warning(f"Manual steps required for v{key}: {step.manual_note}")
+        gate_reason = self._manual_gate_reason(new_v)
+        if gate_reason:
+            logger.warning(f"Manual steps required for v{key}: {gate_reason}")
             self._charm.unit.status = ops.BlockedStatus(
                 f"Manual steps needed before v{key}. Check logs, then run proceed-upgrade."
             )
@@ -253,13 +285,14 @@ class Upgrader(ops.Object):
             return
 
         # Version has changed — check for unacknowledged manual gate
-        if self._has_manual_gate(running_v) and self._get_upgrade_acknowledged() != str(running_v):
+        gate_reason = self._manual_gate_reason(running_v)
+        if gate_reason and self._get_upgrade_acknowledged() != str(running_v):
             logger.error(
-                "Manual steps required before this upgrade. "
+                f"Manual steps required before this upgrade: {gate_reason} "
                 "Check logs from upgrade-charm, complete them, then run proceed-upgrade."
             )
             charm.unit.status = ops.BlockedStatus(
-                "Manual steps required. Run proceed-upgrade action."
+                f"Manual steps required: {gate_reason} Then run proceed-upgrade action."
             )
             return
 
@@ -280,7 +313,7 @@ class Upgrader(ops.Object):
             event.fail("No upgrade in progress: stored version already matches charm version.")
             return
 
-        if not self._has_manual_gate(new_v):
+        if not self._manual_gate_reason(new_v):
             event.fail(
                 "No manual steps required for this upgrade; pebble-ready handles it automatically."
             )
