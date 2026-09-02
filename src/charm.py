@@ -78,7 +78,7 @@ class HeadscaleCharm(ops.CharmBase):
         event.secret.get_content(refresh=True)
         self._configure_and_restart()
 
-    def _configure_and_restart(self):
+    def _configure_and_restart(self, reassert_certs: bool = True):
         """Render config and restart the workload, unless the unit is blocked.
 
         If the unit is already in BlockedStatus (e.g. a version mismatch or a
@@ -89,6 +89,16 @@ class HeadscaleCharm(ops.CharmBase):
         can have irreversible side effects (e.g. the headscale binary
         auto-migrating the sqlite schema forward on start), poisoning any
         later attempt to correctly resolve the block.
+
+        reassert_certs: if False, skip re-probing the certificates relation
+        for a certificate. Juju only fully clears relation data at
+        relation-broken, not relation-departed -- so immediately after
+        certificates-relation-departed, self.certs.configure_certs() can
+        still see the departing relation's cached certificate as "available"
+        and silently flip self.headscale.tls back to True, causing this
+        method to render a config that references TLS cert files that were
+        just deleted by certs.remove_certs(), crash-looping headscale on
+        restart. _on_certs_removed() passes False to avoid this.
         """
         if isinstance(self.unit.status, ops.BlockedStatus):
             logger.warning(
@@ -96,7 +106,7 @@ class HeadscaleCharm(ops.CharmBase):
             )
             return
         self.headscale.set_name(self._external_name())
-        if self.certs.configure_certs():
+        if reassert_certs and self.certs.configure_certs():
             self.headscale.tls = True
         self._setup_ingress()
         try:
@@ -112,7 +122,7 @@ class HeadscaleCharm(ops.CharmBase):
         logger.info("Running on_certs_removed")
         self.headscale.tls = False
         self.certs.remove_certs()
-        self._configure_and_restart()
+        self._configure_and_restart(reassert_certs=False)
 
     def _on_install(self, _: ops.InstallEvent) -> None:
         try:
