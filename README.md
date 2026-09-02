@@ -17,13 +17,13 @@ This charm deploys headscale in kubernetes. It uses [this rock](http://github.co
 
 ## Upgrading
 
-| Charm Revision | Headscale Image |
-|---|---|
-| <=14 | 6 |
-| 15 | 7 |
-| 16 | 8 |
-| 18 | 9 |
-| 19 | 10 |
+| Charm Revision | Headscale Image | Headscale Version |
+|---|---|---|
+| <=14 | 6 | 0.26.1 |
+| 15 | 7 | 0.26.1 |
+| 16 | 8 | 0.27.0 |
+| 18 | 9 | 0.27.1 |
+| 19 | 10 | 0.28.0 |
 
 ## TODO:
 -[x] policy Files Done
