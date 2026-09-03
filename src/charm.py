@@ -117,6 +117,10 @@ class HeadscaleCharm(ops.CharmBase):
             return
         if not self._update_layer_and_restart():
             return
+        try:
+            self.headscale.reconcile_users(self.headscale.config.get_users())
+        except Exception as e:
+            logger.warning(f"Couldn't reconcile users: {e}")
 
     def _on_certs_removed(self, _: ops.EventBase):
         logger.info("Running on_certs_removed")

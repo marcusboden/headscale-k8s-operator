@@ -49,6 +49,7 @@ class HeadscaleConfig:
     derp_map_url: Optional[str] = None
     dns_extra_records: Optional[str] = ""
     port: Optional[int] = None
+    users: Optional[str] = ""
 
     @staticmethod
     def static_config() -> Dict[str, Any]:
@@ -158,6 +159,12 @@ class HeadscaleConfig:
         else:
             return {"mode": "database"}
 
+    def get_users(self) -> List[str]:
+        """Return the parsed, desired list of usernames from the `users` config."""
+        if not self.users:
+            return []
+        return yaml.safe_load(self.users) or []
+
     def __post_init__(self):
         """Validate the configuration."""
         
@@ -184,11 +191,28 @@ class HeadscaleConfig:
             raise ValueError(f"Either derp-map or derp-map-url must be set.")
 
         if self.dns_extra_records:
-            try:
-                yaml.safe_load(self.dns_extra_records)
-            except yaml.YAMLError as exc:
-                logger.error("dns extra conf is not valid yaml")
-                raise exc
+            self._validate_yaml(self.dns_extra_records, "dns extra conf")
+
+        if self.users:
+            self._validate_users(self.users)
+
+    @staticmethod
+    def _validate_yaml(value: str, label: str) -> None:
+        try:
+            yaml.safe_load(value)
+        except yaml.YAMLError as exc:
+            logger.error(f"{label} is not valid yaml")
+            raise exc
+
+    @staticmethod
+    def _validate_users(users: str) -> None:
+        try:
+            parsed = yaml.safe_load(users)
+        except yaml.YAMLError as exc:
+            logger.error("users config is not valid yaml")
+            raise exc
+        if not isinstance(parsed, list) or not all(isinstance(u, str) for u in parsed):
+            raise ValueError("users config must be a YAML list of usernames.")
 
 class CmdResult(BaseModel):
     stderr: str
@@ -240,6 +264,44 @@ class Headscale:
             # create admin user
             if self._run_headscale_cmd(["user", "create", "charm-admin"]).exit_code != 0:
                 raise Exception("Couldn't create admin user, bailing out")
+
+    def reconcile_users(self, desired: List[str]) -> None:
+        """Make headscale's users match `desired`.
+
+        Users in `desired` but missing from headscale are created. Users
+        that exist in headscale but aren't in `desired` are destroyed --
+        their nodes are force-deleted first -- unless they were created via
+        an external identity provider (a non-empty `provider` field, e.g.
+        OIDC) or are the `charm-admin` user; those are never touched, even
+        if absent from `desired`.
+        """
+        ret = self._run_headscale_cmd(["user", "list"])
+        if ret.exit_code != 0:
+            raise Exception(f"Couldn't list users, bailing out: {ret.stderr}")
+        existing = ret.stdout
+        existing_names = {u["name"] for u in existing}
+
+        for name in set(desired) - existing_names:
+            logger.info(f"creating user {name}")
+            if self._run_headscale_cmd(["user", "create", name]).exit_code != 0:
+                raise Exception(f"Couldn't create user {name!r}, bailing out")
+
+        for u in existing:
+            if u["provider"] or u["name"] in ("charm-admin", *desired):
+                continue
+            logger.info(f"removing unmanaged user {u['name']!r} (id={u['id']})")
+            nodes = self._run_headscale_cmd(["nodes", "list", "-u", u["name"]])
+            if nodes.exit_code != 0:
+                raise Exception(f"Couldn't list nodes for user {u['name']!r}, bailing out")
+            for node in nodes.stdout:
+                if self._run_headscale_cmd(
+                    ["nodes", "delete", "--identifier", str(node["id"]), "--force"]
+                ).exit_code != 0:
+                    raise Exception(f"Couldn't delete node {node['id']} for user {u['name']!r}")
+            if self._run_headscale_cmd(
+                ["user", "destroy", "--identifier", str(u["id"]), "--force"]
+            ).exit_code != 0:
+                raise Exception(f"Couldn't destroy user {u['name']!r}, bailing out")
 
     def set_name(self, name):
         self.name = name

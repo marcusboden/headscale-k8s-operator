@@ -108,6 +108,19 @@ config:
         Custom port for the headscale server to listen on. If not set, defaults to 80 for HTTP and 443 for HTTPS.
         When set, traefik will be configured with a custom entrypoint for this port.
       type: int
+    users:
+      description: |
+        YAML-formatted list of usernames this charm should manage. Users
+        listed here but missing in headscale are created. Users that exist
+        in headscale but are not listed here are destroyed -- their nodes
+        are force-deleted first -- UNLESS they were created via OIDC (i.e.
+        their `provider` field is non-empty) or are the `charm-admin` user;
+        those are never touched, even if absent from this list.
+        Example:
+          users: |
+            - alice
+            - bob
+      type: string
 
 containers:
   headscale:

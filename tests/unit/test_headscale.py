@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 from unittest import mock
 
+import ops
+import pytest
+
 from headscale import Headscale, HeadscaleConfig
 
 
@@ -33,6 +36,22 @@ def _exec_returns(container: mock.MagicMock, stdout: str, stderr: str = "") -> N
     exc = mock.MagicMock()
     exc.wait_output.return_value = (stdout, stderr)
     container.exec.return_value = exc
+
+
+def _exec_sequence(container: mock.MagicMock, outputs: list[tuple[str, str]]) -> None:
+    """Configure successive container.exec(...) calls to return each output in turn."""
+    mocks = []
+    for stdout, stderr in outputs:
+        m = mock.MagicMock()
+        m.wait_output.return_value = (stdout, stderr)
+        mocks.append(m)
+    container.exec.side_effect = mocks
+
+
+def _commands(container: mock.MagicMock) -> list[list[str]]:
+    """Return the list of headscale subcommands (without the CLI prefix) that were run."""
+    prefix_len = 3  # ["/usr/bin/headscale", "--output", "yaml"]
+    return [call.args[0][prefix_len:] for call in container.exec.call_args_list]
 
 
 class TestNodeConfig:
@@ -117,6 +136,130 @@ class TestNodeConfig:
 
     def test_static_config_no_longer_contains_top_level_ephemeral_timeout(self):
         assert "ephemeral_node_inactivity_timeout" not in HeadscaleConfig.static_config()
+
+
+class TestGetUsers:
+    """Tests for HeadscaleConfig.get_users() and its validation."""
+
+    @staticmethod
+    def _config(users: str | None = "") -> HeadscaleConfig:
+        return HeadscaleConfig(
+            name="headscale",
+            log_level="info",
+            magic_dns="",
+            derp_map_url="https://example.com/derp.yaml",
+            users=users,
+        )
+
+    def test_empty_when_unset(self):
+        assert self._config().get_users() == []
+
+    def test_parses_yaml_list(self):
+        assert self._config(users="- alice\n- bob\n").get_users() == ["alice", "bob"]
+
+    def test_rejects_non_list(self):
+        with pytest.raises(ValueError):
+            self._config(users="alice")
+
+    def test_rejects_list_of_non_strings(self):
+        with pytest.raises(ValueError):
+            self._config(users="- 1\n- 2\n")
+
+
+class TestReconcileUsers:
+    """Tests for Headscale.reconcile_users().
+
+    The source of truth is: the declarative `users` config list, plus two
+    fixed exemptions that are never touched regardless of config --
+    OIDC/externally-provisioned users (non-empty `provider`) and the
+    `charm-admin` user.
+    """
+
+    @staticmethod
+    def _user(id: int, name: str, provider: str = "") -> dict:
+        return {"id": id, "name": name, "provider": provider}
+
+    def test_creates_missing_user(self):
+        hs, container = _make_headscale()
+        _exec_sequence(container, [("[]", ""), ("", "")])
+
+        hs.reconcile_users(["alice"])
+
+        assert _commands(container) == [
+            ["user", "list"],
+            ["user", "create", "alice"],
+        ]
+
+    def test_creates_only_missing_users(self):
+        hs, container = _make_headscale()
+        existing = json.dumps([self._user(1, "alice")])
+        _exec_sequence(container, [(existing, "")])
+
+        hs.reconcile_users(["alice"])
+
+        assert _commands(container) == [["user", "list"]]
+
+    def test_oidc_user_never_touched_even_if_absent_from_config(self):
+        hs, container = _make_headscale()
+        existing = json.dumps([self._user(2, "someone@example.com", provider="oidc")])
+        _exec_sequence(container, [(existing, "")])
+
+        hs.reconcile_users([])
+
+        assert _commands(container) == [["user", "list"]]
+
+    def test_charm_admin_never_touched_even_if_absent_from_config(self):
+        hs, container = _make_headscale()
+        existing = json.dumps([self._user(1, "charm-admin")])
+        _exec_sequence(container, [(existing, "")])
+
+        hs.reconcile_users([])
+
+        assert _commands(container) == [["user", "list"]]
+
+    def test_manual_user_removed_with_its_nodes(self):
+        """A user with no provider, not charm-admin, not in config: force-removed."""
+        hs, container = _make_headscale()
+        existing = json.dumps([self._user(5, "manual-user")])
+        nodes = json.dumps([{"id": 10}, {"id": 11}])
+        _exec_sequence(
+            container,
+            [
+                (existing, ""),
+                (nodes, ""),
+                ("", ""),
+                ("", ""),
+                ("", ""),
+            ],
+        )
+
+        hs.reconcile_users([])
+
+        assert _commands(container) == [
+            ["user", "list"],
+            ["nodes", "list", "-u", "manual-user"],
+            ["nodes", "delete", "--identifier", "10", "--force"],
+            ["nodes", "delete", "--identifier", "11", "--force"],
+            ["user", "destroy", "--identifier", "5", "--force"],
+        ]
+
+    def test_user_present_in_config_is_kept(self):
+        hs, container = _make_headscale()
+        existing = json.dumps([self._user(3, "bob")])
+        _exec_sequence(container, [(existing, "")])
+
+        hs.reconcile_users(["bob"])
+
+        assert _commands(container) == [["user", "list"]]
+
+    def test_list_failure_raises(self):
+        hs, container = _make_headscale()
+        container.exec.side_effect = ops.pebble.ExecError(
+            command=["user", "list"], exit_code=1, stdout="", stderr="boom"
+        )
+
+        with pytest.raises(Exception):
+            hs.reconcile_users(["alice"])
 
 
 class TestCreateAuthkey:
