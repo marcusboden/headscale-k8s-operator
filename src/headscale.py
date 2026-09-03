@@ -49,7 +49,7 @@ class HeadscaleConfig:
     derp_map_url: Optional[str] = None
     dns_extra_records: Optional[str] = ""
     port: Optional[int] = None
-    users: Optional[str] = ""
+    users: Optional[str] = None
 
     @staticmethod
     def static_config() -> Dict[str, Any]:
@@ -159,10 +159,17 @@ class HeadscaleConfig:
         else:
             return {"mode": "database"}
 
-    def get_users(self) -> List[str]:
-        """Return the parsed, desired list of usernames from the `users` config."""
-        if not self.users:
-            return []
+    def get_users(self) -> Optional[List[str]]:
+        """Return the desired user list, or None if user management is disabled.
+
+        None means the `users` config option was never set (Juju reports it
+        as None) -- user management is a no-op in this case, so any manually
+        created users are left alone. Any explicitly-set value enables
+        reconciliation, including an empty one (e.g. "" or "[]"), which
+        means "remove all non-exempt local users".
+        """
+        if self.users is None:
+            return None
         return yaml.safe_load(self.users) or []
 
     def __post_init__(self):
@@ -193,7 +200,7 @@ class HeadscaleConfig:
         if self.dns_extra_records:
             self._validate_yaml(self.dns_extra_records, "dns extra conf")
 
-        if self.users:
+        if self.users is not None:
             self._validate_users(self.users)
 
     @staticmethod
@@ -211,6 +218,8 @@ class HeadscaleConfig:
         except yaml.YAMLError as exc:
             logger.error("users config is not valid yaml")
             raise exc
+        if parsed is None:
+            return  # empty/whitespace-only string, treated as an empty list
         if not isinstance(parsed, list) or not all(isinstance(u, str) for u in parsed):
             raise ValueError("users config must be a YAML list of usernames.")
 
@@ -265,16 +274,24 @@ class Headscale:
             if self._run_headscale_cmd(["user", "create", "charm-admin"]).exit_code != 0:
                 raise Exception("Couldn't create admin user, bailing out")
 
-    def reconcile_users(self, desired: List[str]) -> None:
+    def reconcile_users(self, desired: Optional[List[str]]) -> None:
         """Make headscale's users match `desired`.
 
-        Users in `desired` but missing from headscale are created. Users
-        that exist in headscale but aren't in `desired` are destroyed --
-        their nodes are force-deleted first -- unless they were created via
-        an external identity provider (a non-empty `provider` field, e.g.
-        OIDC) or are the `charm-admin` user; those are never touched, even
-        if absent from `desired`.
+        `desired=None` means user management is disabled (the `users`
+        config option was never set) -- this is a no-op, existing users are
+        left alone entirely.
+
+        Otherwise, users in `desired` but missing from headscale are
+        created. Users that exist in headscale but aren't in `desired` are
+        destroyed -- their nodes are force-deleted first -- unless they were
+        created via an external identity provider (a non-empty `provider`
+        field, e.g. OIDC) or are the `charm-admin` user; those are never
+        touched, even if absent from `desired`.
         """
+        if desired is None:
+            logger.info("users config not set; user management disabled")
+            return
+
         ret = self._run_headscale_cmd(["user", "list"])
         if ret.exit_code != 0:
             raise Exception(f"Couldn't list users, bailing out: {ret.stderr}")
@@ -289,19 +306,23 @@ class Headscale:
         for u in existing:
             if u["provider"] or u["name"] in ("charm-admin", *desired):
                 continue
-            logger.info(f"removing unmanaged user {u['name']!r} (id={u['id']})")
-            nodes = self._run_headscale_cmd(["nodes", "list", "-u", u["name"]])
-            if nodes.exit_code != 0:
-                raise Exception(f"Couldn't list nodes for user {u['name']!r}, bailing out")
-            for node in nodes.stdout:
-                if self._run_headscale_cmd(
-                    ["nodes", "delete", "--identifier", str(node["id"]), "--force"]
-                ).exit_code != 0:
-                    raise Exception(f"Couldn't delete node {node['id']} for user {u['name']!r}")
+            self._remove_user(u)
+
+    def _remove_user(self, user: Dict[str, Any]) -> None:
+        """Force-delete a user's nodes, then destroy the user itself."""
+        logger.info(f"removing unmanaged user {user['name']!r} (id={user['id']})")
+        nodes = self._run_headscale_cmd(["nodes", "list", "-u", user["name"]])
+        if nodes.exit_code != 0:
+            raise Exception(f"Couldn't list nodes for user {user['name']!r}, bailing out")
+        for node in nodes.stdout:
             if self._run_headscale_cmd(
-                ["user", "destroy", "--identifier", str(u["id"]), "--force"]
+                ["nodes", "delete", "--identifier", str(node["id"]), "--force"]
             ).exit_code != 0:
-                raise Exception(f"Couldn't destroy user {u['name']!r}, bailing out")
+                raise Exception(f"Couldn't delete node {node['id']} for user {user['name']!r}")
+        if self._run_headscale_cmd(
+            ["user", "destroy", "--identifier", str(user["id"]), "--force"]
+        ).exit_code != 0:
+            raise Exception(f"Couldn't destroy user {user['name']!r}, bailing out")
 
     def set_name(self, name):
         self.name = name

@@ -110,13 +110,14 @@ config:
       type: int
     users:
       description: |
-        YAML-formatted list of usernames this charm should manage. Users
-        listed here but missing in headscale are created. Users that exist
-        in headscale but are not listed here are destroyed -- their nodes
-        are force-deleted first -- UNLESS they were created via OIDC (i.e.
-        their `provider` field is non-empty) or are the `charm-admin` user;
-        those are never touched, even if absent from this list.
-        Example:
+        YAML-formatted list of usernames this charm should manage. If unset
+        (the default), user management is disabled entirely and any
+        manually created users are left alone.
+        Once set to any value (including an empty one, e.g. "" or "[]"),
+        reconciliation is active: users listed here but missing in
+        headscale are created, and any user that exists in headscale but
+        is not listed here is destroyed, excluding OIDC users.
+       Example:
           users: |
             - alice
             - bob

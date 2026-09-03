@@ -139,10 +139,15 @@ class TestNodeConfig:
 
 
 class TestGetUsers:
-    """Tests for HeadscaleConfig.get_users() and its validation."""
+    """Tests for HeadscaleConfig.get_users() and its validation.
+
+    `users=None` (unset) means user management is disabled -- get_users()
+    returns None. Any explicitly-set value, including an empty one, enables
+    reconciliation and returns a (possibly empty) list.
+    """
 
     @staticmethod
-    def _config(users: str | None = "") -> HeadscaleConfig:
+    def _config(users: str | None = None) -> HeadscaleConfig:
         return HeadscaleConfig(
             name="headscale",
             log_level="info",
@@ -151,8 +156,14 @@ class TestGetUsers:
             users=users,
         )
 
-    def test_empty_when_unset(self):
-        assert self._config().get_users() == []
+    def test_none_when_unset(self):
+        assert self._config().get_users() is None
+
+    def test_empty_string_means_empty_list(self):
+        assert self._config(users="").get_users() == []
+
+    def test_explicit_empty_list(self):
+        assert self._config(users="[]").get_users() == []
 
     def test_parses_yaml_list(self):
         assert self._config(users="- alice\n- bob\n").get_users() == ["alice", "bob"]
@@ -178,6 +189,14 @@ class TestReconcileUsers:
     @staticmethod
     def _user(id: int, name: str, provider: str = "") -> dict:
         return {"id": id, "name": name, "provider": provider}
+
+    def test_disabled_when_none(self):
+        """desired=None (users config unset) is a full no-op -- no CLI calls at all."""
+        hs, container = _make_headscale()
+
+        hs.reconcile_users(None)
+
+        container.exec.assert_not_called()
 
     def test_creates_missing_user(self):
         hs, container = _make_headscale()
