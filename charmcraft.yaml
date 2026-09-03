@@ -117,7 +117,7 @@ config:
         reconciliation is active: users listed here but missing in
         headscale are created, and any user that exists in headscale but
         is not listed here is destroyed, excluding OIDC users.
-       Example:
+        Example:
           users: |
             - alice
             - bob
