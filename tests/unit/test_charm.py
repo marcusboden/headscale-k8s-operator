@@ -62,3 +62,41 @@ class TestCertsRemoved:
             ctx.run(ctx.on.config_changed(), state)
 
         configure_certs.assert_called_once()
+
+
+class TestConfigChangeRestart:
+    """Regression test: config changes applied while already active must restart headscale.
+
+    The Pebble layer's command for headscale-server is a static string that
+    never varies with config content, so _update_layer_and_restart()'s
+    replan() can't detect that config.yaml changed and won't restart an
+    already-running service on its own -- it only starts services that
+    aren't running yet. Without an explicit restart, any config change
+    applied after the unit is already active (certs added/removed,
+    magic-dns, policy, DERP map, OIDC/node-expiry, port, users, ...) would
+    silently never take effect.
+    """
+
+    def test_configure_and_restart_passes_restart_true(self, ctx):
+        state = base_state()
+
+        with (
+            mock.patch.object(CertHandler, "configure_certs", return_value=False),
+            mock.patch.object(Headscale, "render_config") as render_config,
+        ):
+            ctx.run(ctx.on.config_changed(), state)
+
+        render_config.assert_called_once_with(restart=True)
+
+    def test_certs_available_also_restarts(self, ctx):
+        """The certificates-available path (this bug's original report) restarts too."""
+        state = base_state()
+
+        with (
+            mock.patch.object(CertHandler, "configure_certs", return_value=True),
+            mock.patch.object(Headscale, "render_config") as render_config,
+        ):
+            ctx.run(ctx.on.config_changed(), state)
+
+        render_config.assert_called_once_with(restart=True)
+

@@ -110,7 +110,7 @@ class HeadscaleCharm(ops.CharmBase):
             self.headscale.tls = True
         self._setup_ingress()
         try:
-            self.headscale.render_config(restart=False)
+            self.headscale.render_config(restart=True)
         except RuntimeError as e:
             logger.error(f"Failed to push config: {e}")
             self.unit.status = ops.BlockedStatus("Failed to write config. Check logs.")
