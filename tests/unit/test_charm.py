@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 from unittest import mock
 
+import ops
 import ops.testing as testing
 
 from certificates import CertHandler
@@ -62,6 +63,43 @@ class TestCertsRemoved:
             ctx.run(ctx.on.config_changed(), state)
 
         configure_certs.assert_called_once()
+
+
+class TestSecretAccessRevokedDuringTeardown:
+    """Regression test: secret-access failures during config render must not crash the hook.
+
+    During unit removal, Juju revokes the unit's secret-access grants (e.g.
+    for the oidc-secret config option) before every hook in the relation-
+    departed/broken cascade has finished running. Since render_config()
+    always rebuilds the whole config wholesale -- including re-fetching the
+    OIDC secret just to re-emit its unchanged block -- any teardown-time
+    event that re-renders config after that revocation (e.g.
+    certificates-relation-departed calling this via _on_certs_removed to
+    disable TLS) would previously raise an uncaught ops.model.ModelError
+    and leave the hook "awaiting error resolution", blocking removal.
+    """
+
+    def test_certs_removed_survives_secret_permission_denied(self, ctx):
+        relation = testing.Relation(endpoint="certificates", interface="tls-certificates")
+        state = base_state()
+        state = dataclasses.replace(state, relations=frozenset(state.relations | {relation}))
+
+        with (
+            mock.patch.object(CertHandler, "configure_certs", return_value=False),
+            mock.patch.object(CertHandler, "remove_certs"),
+            # Mock _generate_config (not render_config itself) so the real
+            # render_config() body -- including its ModelError -> RuntimeError
+            # conversion, which is the actual fix under test -- still runs.
+            mock.patch.object(
+                Headscale,
+                "_generate_config",
+                side_effect=ops.model.ModelError("ERROR permission denied"),
+            ),
+        ):
+            out = ctx.run(ctx.on.relation_departed(relation), state)
+
+        assert isinstance(out.unit_status, testing.BlockedStatus)
+        assert "Failed to write config" in out.unit_status.message
 
 
 class TestConfigChangeRestart:

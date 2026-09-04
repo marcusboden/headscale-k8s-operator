@@ -339,6 +339,23 @@ class Headscale:
         return config_dict
 
     def render_config(self, restart: bool = True) -> None:
+        """Push a freshly generated config.yaml (and DERP map) to the workload.
+
+        Wraps pebble errors and ops.model.ModelError into RuntimeError so
+        callers (via _configure_and_restart) can degrade gracefully (log +
+        BlockedStatus + clean return) instead of crashing the hook
+        uncaught. The ModelError case matters specifically during unit
+        removal: Juju revokes the unit's secret-access grants (e.g. for the
+        oidc-secret config option) partway through the relation-departed/
+        broken cascade, before every hook in that cascade has finished
+        running. Since config generation always rebuilds the whole config
+        wholesale (including re-fetching the OIDC secret to re-emit its
+        unchanged block), any teardown-time event that re-renders config
+        after that revocation -- e.g. certificates-relation-departed calling
+        this via _on_certs_removed to disable TLS -- would otherwise raise
+        an uncaught ops.model.ModelError and leave the hook "awaiting error
+        resolution", blocking the unit removal from completing.
+        """
         try:
             self._check_policy()
             if self.config.derp_map:
@@ -348,7 +365,10 @@ class Headscale:
             )
             if restart:
                 self.container.restart(self.pebble_service_name)
-        except (ops.pebble.APIError, ops.pebble.ConnectionError, ops.pebble.ChangeError) as e:
+        except (
+            ops.pebble.APIError, ops.pebble.ConnectionError, ops.pebble.ChangeError,
+            ops.model.ModelError,
+        ) as e:
             raise RuntimeError(f"Failed to push config or restart headscale: {e}") from e
 
     def _run_cmd(self, command: List[str]):
